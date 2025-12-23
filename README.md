@@ -65,6 +65,24 @@ RadTune.exe -set gpu=0 core=2500 coremin=2100 volt=1050 vram=2100 power=15 zeror
 RadTune.exe -load "C:\path\to\performance_profile.xml" [gpu=N]
 ```
 
+## Why RadTune? (Solving Adrenalin Resets)
+
+One common issue with the official AMD Adrenalin software is that tuning settings (overclocking/undervolting) often reset after a reboot, system crash, or even a simple driver timeout. 
+
+**RadTune** provides a reliable way to force your preferred settings:
+- **Persistence**: By using a CLI tool, you can ensure your settings are applied exactly as defined, without relying on the Adrenalin UI state.
+- **Automation**: You can use **Windows Task Scheduler** to run RadTune automatically at Logon or System Startup.
+
+### Automating with Task Scheduler
+1. Open **Task Scheduler** and click **Create Basic Task**.
+2. **Trigger**: Select "When I log on".
+3. **Action**: Select "Start a program".
+4. **Program/script**: Path to `RadTune.exe`.
+5. **Add arguments**: `-set gpu=0 core=2500 volt=1100 ...` (or `-load "your_profile.xml"`).
+6. **Finish**: In the task properties, ensure **"Run with highest privileges"** is checked (required for ADLX tuning).
+
+---
+
 ## Project Structure
 
 - `src/`: Source code (`.cpp`) and headers (`.h`).
