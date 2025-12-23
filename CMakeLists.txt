@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(RadeonOCSetter)
+project(RadTune)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -22,15 +22,15 @@ set(HEADERS
     src/ProfileParser.h
 )
 
-add_executable(RadeonOCSetter ${SOURCES} ${HEADERS})
+add_executable(RadTune ${SOURCES} ${HEADERS})
 
 # Include directories
-target_include_directories(RadeonOCSetter PRIVATE 
+target_include_directories(RadTune PRIVATE 
     "${ADLX_INCLUDE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
 # Link libraries
 if(WIN32)
-    target_link_libraries(RadeonOCSetter PRIVATE User32)
+    target_link_libraries(RadTune PRIVATE User32)
 endif()

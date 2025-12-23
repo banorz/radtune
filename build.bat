@@ -23,5 +23,5 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b %ERRORLEVEL%
 )
 
-echo [+] Build successful! Output: %BUILD_DIR%\Release\RadeonOCSetter.exe
+echo [+] Build successful! Output: %BUILD_DIR%\Release\RadTune.exe
 endlocal

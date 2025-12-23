@@ -190,11 +190,11 @@ void LoadProfileOnGpu(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices,
 
 int main(int argc, char* argv[]) {
     // Print Banner
-    std::cout << "\033[1;31m" << "  ____           _                      ___   ____" << "\033[0m" << std::endl;
-    std::cout << "\033[1;31m" << " |  _ \\ __ _  __| | ___  ___  _ __     / _ \\ / ___|" << "\033[0m" << std::endl;
-    std::cout << "\033[1;31m" << " | |_) / _` |/ _` |/ _ \\/ _ \\| '_ \\   | | | | |    " << "\033[0m" << std::endl;
-    std::cout << "\033[1;31m" << " |  _ < (_| | (_| |  __/ (_) | | | |  | |_| | |___ " << "\033[0m" << std::endl;
-    std::cout << "\033[1;31m" << " |_| \\_\\__,_|\\__,_|\\___|\\___/|_| |_|   \\___/ \\____|" << "\033[0m" << " Setter v1.1" << std::endl;
+    std::cout << "\033[1;31m" << "  ____           _ _____                 " << "\033[0m" << std::endl;
+    std::cout << "\033[1;31m" << " |  _ \\ __ _  __| |_   _|   _ _ __   ___ " << "\033[0m" << std::endl;
+    std::cout << "\033[1;31m" << " | |_) / _` |/ _` | | || | | | '_ \\ / _ \\" << "\033[0m" << std::endl;
+    std::cout << "\033[1;31m" << " |  _ < (_| | (_| | | || |_| | | | |  __/" << "\033[0m" << std::endl;
+    std::cout << "\033[1;31m" << " |_| \\_\\__,_|\\__,_| |_| \\__,_|_| |_|\\___|" << "\033[0m" << " v1.1 (ADLX)" << std::endl;
 
     ADLX_RESULT res = g_ADLX.Initialize();
     if (ADLX_FAILED(res)) {
@@ -260,13 +260,13 @@ int main(int argc, char* argv[]) {
 
         } else {
             std::cout << "Usage:" << std::endl;
-            std::cout << "  RadeonOCSetter -list" << std::endl;
-            std::cout << "  RadeonOCSetter -set [gpu=N] [core=MHz] [coremin=MHz] [volt=mV] [vram=MHz] [power=%] [zerorpm=0|1]" << std::endl;
-            std::cout << "  RadeonOCSetter -load profile.xml [gpu=N]" << std::endl;
+            std::cout << "  RadTune -list" << std::endl;
+            std::cout << "  RadTune -set [gpu=N] [core=MHz] [coremin=MHz] [volt=mV] [vram=MHz] [power=%] [zerorpm=0|1]" << std::endl;
+            std::cout << "  RadTune -load profile.xml [gpu=N]" << std::endl;
         }
     } else {
-        std::cout << "RadeonOC-Setter v1.1 (ADLX based)" << std::endl;
-        std::cout << "Usage: RadeonOCSetter [-list | -set ... | -load ...]" << std::endl;
+        std::cout << "RadTune v1.1 (ADLX based)" << std::endl;
+        std::cout << "Usage: RadTune [-list | -set ... | -load ...]" << std::endl;
     }
 
     g_ADLX.Terminate();
