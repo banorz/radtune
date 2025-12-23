@@ -1,0 +1,37 @@
+# Build directories
+build/
+release/
+x64/
+Debug/
+Release/
+release_build/
+
+# MSVC artifacts in root (if any)
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+
+# CMake artifacts
+CMakeCache.txt
+CMakeFiles/
+CMakeSettings.json
+cmake_install.cmake
+Makefile
+install_manifest.txt
+
+# IDE settings
+.vscode/
+.vs/
+.idea/
+
+# System files
+Thumb.db
+.DS_Store
+
+# SDK/Third-party (Optional: common to ignore large SDKs if they can be downloaded)
+# adlx_sdk/
