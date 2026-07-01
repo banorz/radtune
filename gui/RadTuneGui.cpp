@@ -14,6 +14,7 @@
 #include <commdlg.h>
 #include <string>
 #include <cstdlib>
+#include <utility>
 #include <initializer_list>
 
 #define IDI_APPICON 101
@@ -262,46 +263,59 @@ void ShowOutput(const std::string& acp) {
     SetWindowTextW(g_output, AcpToWide(CleanOutput(acp)).c_str());
 }
 
-void RunRadTune(const std::wstring& args) {
+// --- Async command execution -------------------------------------------------
+// RadTune.exe (ADLX init) can take ~1s; running it on the UI thread froze the
+// window. Run it on a worker thread and post the captured output back so the UI
+// stays responsive.
+enum { RUN_SHOW = 1, RUN_READ = 2 };
+constexpr UINT WM_APP_RESULT = WM_APP + 1;
+
+HWND g_main = nullptr;
+bool g_busy = false;
+std::string g_header;                 // "> cmd" echo, prepended to the result
+
+struct RunCtx { int kind; std::wstring cmd; };
+struct RunOut { int kind; std::string text; };
+
+DWORD WINAPI RunWorker(LPVOID p) {
+    RunCtx* c = static_cast<RunCtx*>(p);
+    std::string out = RunAndCapture(c->cmd);
+    PostMessageW(g_main, WM_APP_RESULT, 0, reinterpret_cast<LPARAM>(new RunOut{ c->kind, std::move(out) }));
+    delete c;
+    return 0;
+}
+
+void SetActionsEnabled(bool on) {
+    for (int id : { IDC_READ, IDC_APPLY, IDC_SCHEDULE, IDC_STATUS, IDC_REMOVE })
+        EnableWindow(GetDlgItem(g_main, id), on);
+}
+
+// Launches "RadTune.exe <args>" on a worker thread; the result comes back via
+// WM_APP_RESULT and is handled by OnRunResult on the UI thread.
+void StartRun(int kind, const std::wstring& args) {
+    if (g_busy) return;
     const std::wstring cmd = Quote(RadTunePath()) + L" " + args;
-    ShowOutput("> " + WideToAcp(cmd) + "\r\n\r\n" + RunAndCapture(cmd));
-    SaveSettings();
-}
-
-void OnApply() {
-    std::wstring err;
-    const std::wstring payload = BuildPayload(err);
-    if (payload.empty()) { ShowOutput("[GUI] " + WideToAcp(err)); return; }
-    RunRadTune(payload);
-}
-
-void OnSchedule() {
-    std::wstring err;
-    const std::wstring payload = BuildPayload(err);
-    if (payload.empty()) { ShowOutput("[GUI] " + WideToAcp(err)); return; }
-    std::wstring trigger = Trim(GetText(g_trigger));  // logon | startup | daily
-    if (trigger == L"daily") {
-        const std::wstring t = Trim(GetText(g_time));
-        if (t.size() != 5 || t[2] != L':') {
-            ShowOutput("[GUI] For a daily schedule, enter the time as HH:MM (e.g. 09:00).");
-            return;
-        }
-        trigger += L"=" + t;
+    g_header = "> " + WideToAcp(cmd) + "\r\n\r\n";
+    ShowOutput(g_header + "Running...");
+    g_busy = true;
+    SetActionsEnabled(false);
+    RunCtx* c = new RunCtx{ kind, cmd };
+    HANDLE h = CreateThread(nullptr, 0, RunWorker, c, 0, nullptr);
+    if (h) {
+        CloseHandle(h);
+    } else {
+        delete c;
+        g_busy = false;
+        SetActionsEnabled(true);
+        ShowOutput(g_header + "[GUI] Could not start worker thread.");
     }
-    RunRadTune(L"-schedule " + trigger + L" " + payload);
 }
 
-// Parse "key=value" lines from RadTune -get and prefill the manual fields.
-void OnReadGpu() {
-    std::wstring gpu = Trim(GetText(g_gpu));
-    if (gpu.empty()) gpu = L"0";
-    const std::wstring cmd = Quote(RadTunePath()) + L" -get gpu=" + gpu;
-    const std::string raw = RunAndCapture(cmd);
+// Fills the manual fields from RadTune -get output. Returns true if any matched.
+bool ParseGetOutput(const std::string& raw) {
     const std::string clean = CleanOutput(raw);
-
     SetCombo(g_source, 0);  // switch to Manual so fields are visible/editable
     UpdateSourceState();
-
     bool got = false;
     size_t pos = 0;
     while (pos < clean.size()) {
@@ -322,9 +336,50 @@ void OnReadGpu() {
         else known = false;
         if (known) got = true;
     }
-    const std::string note = got ? "" : "[GUI] No tuning values were read from the GPU.\r\n\r\n";
-    ShowOutput(note + "> " + WideToAcp(cmd) + "\r\n\r\n" + raw);
+    return got;
+}
+
+// Runs on the UI thread when a worker finishes (WM_APP_RESULT).
+void OnRunResult(int kind, const std::string& raw) {
+    if (kind == RUN_READ) {
+        const bool got = ParseGetOutput(raw);
+        const std::string note = got ? "" : "[GUI] No tuning values were read from the GPU.\r\n\r\n";
+        ShowOutput(note + g_header + raw);
+    } else {
+        ShowOutput(g_header + raw);
+    }
     SaveSettings();
+    g_busy = false;
+    SetActionsEnabled(true);
+}
+
+void OnApply() {
+    std::wstring err;
+    const std::wstring payload = BuildPayload(err);
+    if (payload.empty()) { ShowOutput("[GUI] " + WideToAcp(err)); return; }
+    StartRun(RUN_SHOW, payload);
+}
+
+void OnSchedule() {
+    std::wstring err;
+    const std::wstring payload = BuildPayload(err);
+    if (payload.empty()) { ShowOutput("[GUI] " + WideToAcp(err)); return; }
+    std::wstring trigger = Trim(GetText(g_trigger));  // logon | startup | daily
+    if (trigger == L"daily") {
+        const std::wstring t = Trim(GetText(g_time));
+        if (t.size() != 5 || t[2] != L':') {
+            ShowOutput("[GUI] For a daily schedule, enter the time as HH:MM (e.g. 09:00).");
+            return;
+        }
+        trigger += L"=" + t;
+    }
+    StartRun(RUN_SHOW, L"-schedule " + trigger + L" " + payload);
+}
+
+void OnReadGpu() {
+    std::wstring gpu = Trim(GetText(g_gpu));
+    if (gpu.empty()) gpu = L"0";
+    StartRun(RUN_READ, L"-get gpu=" + gpu);
 }
 
 void OnBrowse() {
@@ -473,6 +528,7 @@ void DrawButton(LPDRAWITEMSTRUCT dis) {
 LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_CREATE:
+        g_main  = w;
         g_font  = MakeFont(9,  FW_NORMAL,   L"Segoe UI");
         g_mono  = MakeFont(9,  FW_NORMAL,   L"Consolas");
         g_title = MakeFont(15, FW_SEMIBOLD, L"Segoe UI");
@@ -491,14 +547,20 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         if (dis->CtlType == ODT_BUTTON) { DrawButton(dis); return TRUE; }
         return DefWindowProcW(w, msg, wp, lp);
     }
+    case WM_APP_RESULT: {
+        auto* res = reinterpret_cast<RunOut*>(lp);
+        OnRunResult(res->kind, res->text);
+        delete res;
+        return 0;
+    }
     case WM_COMMAND:
         switch (LOWORD(wp)) {
         case IDC_SOURCE: if (HIWORD(wp) == CBN_SELCHANGE) UpdateSourceState(); return 0;
         case IDC_READ:     OnReadGpu();  return 0;
         case IDC_APPLY:    OnApply();    return 0;
         case IDC_SCHEDULE: OnSchedule(); return 0;
-        case IDC_STATUS:   RunRadTune(L"-schedule status"); return 0;
-        case IDC_REMOVE:   RunRadTune(L"-schedule remove"); return 0;
+        case IDC_STATUS:   StartRun(RUN_SHOW, L"-schedule status"); return 0;
+        case IDC_REMOVE:   StartRun(RUN_SHOW, L"-schedule remove"); return 0;
         case IDC_BROWSE:   OnBrowse();   return 0;
         }
         return 0;

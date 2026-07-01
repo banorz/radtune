@@ -40,7 +40,8 @@ build.bat           # one-click build (builds both exes)
 Plain Win32 + common controls (no ImGui, no .NET — zero extra dependencies). Chosen over Dear ImGui for this frontend precisely because it needs no vendored libraries or graphics backend and builds with the stock VS toolchain.
 
 - Locates `RadTune.exe` next to itself (`GetModuleFileNameW` → same dir).
-- Builds a command line from the form (`-set` / `-load`, optionally wrapped in `-schedule <trigger>`), runs it via `CreateProcessW` with a redirected stdout pipe (`CREATE_NO_WINDOW`), strips ANSI escapes, and shows the result in a read-only edit box.
+- Builds a command line from the form (`-set` / `-load` / `-get`, optionally wrapped in `-schedule <trigger>`), runs it via `CreateProcessW` with a redirected stdout pipe (`CREATE_NO_WINDOW`), strips ANSI escapes, and shows the result in a read-only edit box.
+- Runs the CLI on a **worker thread** (`StartRun`/`RunWorker`), posting the captured output back to the UI thread via `WM_APP_RESULT` (`OnRunResult`). ADLX init makes `-get`/`-set` take ~1s; running it inline froze the window. While a run is in flight the action buttons are disabled and the output shows "Running…".
 - Ships an **elevation manifest** (`requireAdministrator`); the child `RadTune.exe` inherits admin rights, which tuning and highest-privileges scheduling both need.
 - Buttons: **Apply now** (`-set`/`-load`), **Read from GPU** (`-get`, prefills the form), **Create schedule** (`-schedule <logon|startup|daily=HH:MM> …`), **Show status**, **Remove schedule**.
 - **Remembers the form** between runs in the registry (`HKCU\Software\RadTune`), loaded on open / saved on each action and on close.

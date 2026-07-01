@@ -1,6 +1,7 @@
 #include "Scheduler.h"
 
 #include <Windows.h>
+#include <iostream>
 #include <fstream>
 #include <sstream>
 #include <cstdlib>
@@ -197,7 +198,10 @@ bool Remove(std::string& error) {
 
 void Status() {
     const std::string cmd = "schtasks /query /tn \"" + std::string(TASK_NAME) + "\" /v /fo LIST";
-    RunSchtasks(cmd);
+    if (RunSchtasks(cmd) != 0) {
+        std::cout << "\n[i] No scheduled task named \"" << TASK_NAME
+                  << "\" exists yet. Use \"Create schedule\" to add one." << std::endl;
+    }
 }
 
 } // namespace Scheduler
