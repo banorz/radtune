@@ -7,6 +7,15 @@
 - **GPU control**: AMD **ADLX SDK** (headers under `adlx_sdk/SDK/Include`, not committed — see [deploy.md](deploy.md)).
 - **Platform**: Win32 (`User32` linked; ADLX is loaded dynamically from the installed driver).
 
+## Two executables
+
+The build produces **two independent exes** from one CMake project:
+
+- **`RadTune.exe`** — the CLI engine (needs the ADLX SDK).
+- **`RadTuneGUI.exe`** — a native Win32 frontend that *shells out* to `RadTune.exe`. It does **not** include or link ADLX, so it builds even without the SDK. See the GUI section below.
+
+Architectural rule (keep it): the **CLI is the only thing that talks to ADLX**; the GUI (and any future watchdog) are frontends that build command lines and run `RadTune.exe`.
+
 ## Repo layout
 
 ```
@@ -16,10 +25,23 @@ src/
   WinAPIs.cpp       # Win32 -> ADLX platform abstraction (atomics, LoadLibrary) — from the AMD SDK sample
   ProfileParser.{h,cpp} # hand-rolled string-based parser for Adrenalin-exported XML profiles
   Scheduler.{h,cpp} # Windows Task Scheduler integration (the -schedule verb)
+gui/
+  RadTuneGui.cpp    # RadTuneGUI.exe — native Win32 form; builds -set/-load/-schedule and runs RadTune.exe
+  RadTuneGui.manifest # requireAdministrator + Common Controls v6
+  RadTuneGui.rc     # embeds the manifest
 adlx_sdk/           # ADLX SDK (NOT in repo — placeholder only)
 CMakeLists.txt
-build.bat           # one-click build
+build.bat           # one-click build (builds both exes)
 ```
+
+## GUI — [gui/RadTuneGui.cpp](../gui/RadTuneGui.cpp)
+
+Plain Win32 + common controls (no ImGui, no .NET — zero extra dependencies). Chosen over Dear ImGui for this frontend precisely because it needs no vendored libraries or graphics backend and builds with the stock VS toolchain.
+
+- Locates `RadTune.exe` next to itself (`GetModuleFileNameW` → same dir).
+- Builds a command line from the form (`-set` / `-load`, optionally wrapped in `-schedule <trigger>`), runs it via `CreateProcessW` with a redirected stdout pipe (`CREATE_NO_WINDOW`), strips ANSI escapes, and shows the result in a read-only edit box.
+- Ships an **elevation manifest** (`requireAdministrator`); the child `RadTune.exe` inherits admin rights, which tuning and highest-privileges scheduling both need.
+- Buttons: **Apply now** (`-set`/`-load`), **Create schedule** (`-schedule <logon|startup|daily=HH:MM> …`), **Show status**, **Remove schedule**.
 
 ## Entry point & dispatch — [main.cpp](../src/main.cpp)
 

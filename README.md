@@ -85,6 +85,15 @@ RadTune.exe -schedule remove
 
 > Run the `-schedule` command **once from an elevated (Administrator) console** — creating a task that runs with highest privileges requires admin rights. After that, the task fires automatically with no further prompts.
 
+### 5. GUI (RadTuneGUI.exe)
+Prefer not to type commands? `RadTuneGUI.exe` is a small native frontend for the CLI. It builds the same `-set` / `-load` / `-schedule` commands from a form and runs `RadTune.exe` for you, showing the output.
+
+- Keep `RadTuneGUI.exe` **next to** `RadTune.exe` (both land in `build/Release/`); the GUI looks for the CLI in its own folder.
+- It requests administrator rights on launch, so the tuning it triggers has the privileges ADLX needs.
+- **Apply now** runs the tuning immediately; **Create schedule** registers the Task Scheduler entry with the chosen trigger (logon / startup / daily); **Show status** / **Remove schedule** manage it.
+
+The GUI is a thin wrapper — the CLI remains the engine and is fully usable on its own.
+
 ## Why RadTune? (Solving Adrenalin Resets)
 
 One common issue with the official AMD Adrenalin software is that tuning settings (overclocking/undervolting) often reset after a reboot, system crash, or even a simple driver timeout. 

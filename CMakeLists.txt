@@ -36,3 +36,22 @@ target_include_directories(RadTune PRIVATE
 if(WIN32)
     target_link_libraries(RadTune PRIVATE User32)
 endif()
+
+# ---------------------------------------------------------------------------
+# RadTuneGUI - native Win32 frontend that shells out to RadTune.exe.
+# Independent of ADLX (does not include or link the SDK); builds standalone.
+# ---------------------------------------------------------------------------
+if(WIN32)
+    add_executable(RadTuneGUI WIN32
+        gui/RadTuneGui.cpp
+        gui/RadTuneGui.rc
+    )
+    target_link_libraries(RadTuneGUI PRIVATE
+        User32 Gdi32 Comctl32 Comdlg32 Shell32
+    )
+    # We embed our own manifest (elevation + Common Controls v6) via the .rc.
+    # Stop the linker from also generating one, otherwise the two collide.
+    if(MSVC)
+        set_target_properties(RadTuneGUI PROPERTIES LINK_FLAGS "/MANIFEST:NO")
+    endif()
+endif()

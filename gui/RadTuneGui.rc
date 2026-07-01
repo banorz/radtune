@@ -1,0 +1,5 @@
+#include <winuser.h>
+
+// Embed the application manifest (elevation + Common Controls v6).
+// CREATEPROCESS_MANIFEST_RESOURCE_ID (1) with type RT_MANIFEST (24).
+1 RT_MANIFEST "RadTuneGui.manifest"

@@ -19,8 +19,9 @@ C++17 CLI tool built on the **AMD ADLX SDK** that tunes Radeon GPUs (overclock /
 ## Most frequent commands
 
 ```bash
-build.bat                                            # configure + build (VS 2022, x64) -> build/Release/RadTune.exe
+build.bat                                            # configure + build (VS 2022, x64) -> build/Release/{RadTune,RadTuneGUI}.exe
 
+RadTuneGUI.exe                                       # optional GUI frontend (shells out to RadTune.exe next to it)
 RadTune -list                                        # list GPUs + current tuning
 RadTune -set gpu=0 core=2500 coremin=2100 volt=1050 vram=2100 power=15 zerorpm=1
 RadTune -load "C:\profile.xml" [gpu=N]               # apply an Adrenalin-exported XML profile
