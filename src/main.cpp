@@ -18,6 +18,58 @@ void PrintResult(const std::string& msg, ADLX_RESULT res) {
 }
 
 #include "ProfileParser.h"
+#include "Scheduler.h"
+
+// Handles the "-schedule" verb. Returns true if the verb was consumed (caller
+// should exit with *exitCode). Registering a task does not need ADLX, so this
+// runs before the SDK is initialized.
+bool HandleScheduleVerb(int argc, char* argv[], int& exitCode) {
+    if (argc < 2 || std::string(argv[1]) != "-schedule")
+        return false;
+
+    auto usage = []() {
+        std::cout << "Usage:\n"
+                  << "  RadTune -schedule <trigger> <command>\n"
+                  << "  Triggers : logon | startup | daily=HH:MM\n"
+                  << "  Manage   : RadTune -schedule status | remove\n\n"
+                  << "Examples:\n"
+                  << "  RadTune -schedule logon -set gpu=0 core=2500 volt=1050\n"
+                  << "  RadTune -schedule daily=09:00 -load \"C:\\profile.xml\"\n"
+                  << "  RadTune -schedule remove\n";
+    };
+
+    if (argc < 3) { usage(); exitCode = 1; return true; }
+
+    std::string sub = argv[2];
+    std::string error;
+
+    if (sub == "remove") {
+        exitCode = Scheduler::Remove(error) ? 0 : 1;
+        if (exitCode == 0) std::cout << "\033[1;32m[+] Scheduled task removed.\033[0m" << std::endl;
+        else               std::cerr << "\033[1;31m[!] " << error << "\033[0m" << std::endl;
+        return true;
+    }
+    if (sub == "status") {
+        Scheduler::Status();
+        exitCode = 0;
+        return true;
+    }
+
+    // Otherwise `sub` is the trigger and the remaining args are the payload command.
+    std::vector<std::string> payload;
+    for (int i = 3; i < argc; ++i) payload.push_back(argv[i]);
+
+    if (Scheduler::Install(sub, payload, error)) {
+        std::cout << "\033[1;32m[+] Scheduled task '" << Scheduler::TASK_NAME
+                  << "' created (trigger: " << sub << ").\033[0m" << std::endl;
+        std::cout << "    Runs with highest privileges. Verify with: RadTune -schedule status" << std::endl;
+        exitCode = 0;
+    } else {
+        std::cerr << "\033[1;31m[!] " << error << "\033[0m" << std::endl;
+        exitCode = 1;
+    }
+    return true;
+}
 
 void ShowGPUSettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices) {
     const char* name;
@@ -196,6 +248,11 @@ int main(int argc, char* argv[]) {
     std::cout << "\033[1;31m" << " |  _ < (_| | (_| | | || |_| | | | |  __/" << "\033[0m" << std::endl;
     std::cout << "\033[1;31m" << " |_| \\_\\__,_|\\__,_| |_| \\__,_|_| |_|\\___|" << "\033[0m" << " v1.1 (ADLX)" << std::endl;
 
+    // Task Scheduler management does not need the GPU/ADLX; handle it first.
+    int scheduleExit = 0;
+    if (HandleScheduleVerb(argc, argv, scheduleExit))
+        return scheduleExit;
+
     ADLX_RESULT res = g_ADLX.Initialize();
     if (ADLX_FAILED(res)) {
         std::cerr << "\n\033[1;31m[!] ADLX Initialization failed.\033[0m" << std::endl;
@@ -263,6 +320,8 @@ int main(int argc, char* argv[]) {
             std::cout << "  RadTune -list" << std::endl;
             std::cout << "  RadTune -set [gpu=N] [core=MHz] [coremin=MHz] [volt=mV] [vram=MHz] [power=%] [zerorpm=0|1]" << std::endl;
             std::cout << "  RadTune -load profile.xml [gpu=N]" << std::endl;
+            std::cout << "  RadTune -schedule <logon|startup|daily=HH:MM> <-set ...|-load ...>" << std::endl;
+            std::cout << "  RadTune -schedule status | remove" << std::endl;
         }
     } else {
         std::cout << "RadTune v1.1 (ADLX based)" << std::endl;

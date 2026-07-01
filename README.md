@@ -65,15 +65,37 @@ RadTune.exe -set gpu=0 core=2500 coremin=2100 volt=1050 vram=2100 power=15 zeror
 RadTune.exe -load "C:\path\to\performance_profile.xml" [gpu=N]
 ```
 
+### 4. Automatic Scheduling (Task Scheduler)
+Register RadTune to re-apply your tuning automatically — no manual Task Scheduler clicking. The task is created with **highest privileges** (required by ADLX) for you.
+
+```bash
+# Re-apply manual settings at every logon
+RadTune.exe -schedule logon -set gpu=0 core=2500 volt=1050
+
+# Apply a profile at system startup
+RadTune.exe -schedule startup -load "C:\path\to\profile.xml"
+
+# Apply every day at 09:00
+RadTune.exe -schedule daily=09:00 -set core=2500 power=15
+
+# Inspect or remove the scheduled task
+RadTune.exe -schedule status
+RadTune.exe -schedule remove
+```
+
+> Run the `-schedule` command **once from an elevated (Administrator) console** — creating a task that runs with highest privileges requires admin rights. After that, the task fires automatically with no further prompts.
+
 ## Why RadTune? (Solving Adrenalin Resets)
 
 One common issue with the official AMD Adrenalin software is that tuning settings (overclocking/undervolting) often reset after a reboot, system crash, or even a simple driver timeout. 
 
 **RadTune** provides a reliable way to force your preferred settings:
 - **Persistence**: By using a CLI tool, you can ensure your settings are applied exactly as defined, without relying on the Adrenalin UI state.
-- **Automation**: You can use **Windows Task Scheduler** to run RadTune automatically at Logon or System Startup.
+- **Automation**: The built-in `-schedule` verb (see [Automatic Scheduling](#4-automatic-scheduling-task-scheduler)) wires RadTune into **Windows Task Scheduler** for you — at logon, at startup, or on a daily timer.
 
 ### Automating with Task Scheduler
+The recommended way is the one-line `-schedule` command documented above — it creates the task with highest privileges automatically. If you prefer to configure it by hand:
+
 1. Open **Task Scheduler** and click **Create Basic Task**.
 2. **Trigger**: Select "When I log on".
 3. **Action**: Select "Start a program".

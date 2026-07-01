@@ -14,12 +14,14 @@ set(SOURCES
     src/ADLXHelper.cpp
     src/WinAPIs.cpp
     src/ProfileParser.cpp
+    src/Scheduler.cpp
 )
 
 # Header files for better IDE integration
 set(HEADERS
     src/ADLXHelper.h
     src/ProfileParser.h
+    src/Scheduler.h
 )
 
 add_executable(RadTune ${SOURCES} ${HEADERS})
