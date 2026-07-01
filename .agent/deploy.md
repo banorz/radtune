@@ -27,14 +27,21 @@ One-click:
 build.bat
 ```
 
+By default it lets CMake **auto-detect the newest Visual Studio installed** (works with VS 2022, 2026, …). To force a specific one, pass the generator name:
+
+```bash
+build.bat "Visual Studio 18 2026"
+build.bat "Visual Studio 17 2022"
+```
+
 It runs (from [build.bat](../build.bat)):
 
 ```bash
-cmake .. -G "Visual Studio 17 2022" -A x64
+cmake .. -A x64            REM no -G -> newest VS; or -G "<generator>" when overridden
 cmake --build . --config Release
 ```
 
-Output: **`build/Release/RadTune.exe`**.
+Output: **`build/Release/RadTune.exe`** and **`RadTuneGUI.exe`**. Switching VS versions on an existing `build/` fails on the cached generator — delete `build/` and rerun.
 
 Manual equivalent:
 

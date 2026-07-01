@@ -3,6 +3,14 @@ setlocal
 
 set "BUILD_DIR=build"
 
+REM CMake generator.
+REM   - No argument: CMake auto-selects the newest Visual Studio installed
+REM     (so VS 2022, 2026, ... all work without editing this file).
+REM   - Override by passing a generator name, e.g.:
+REM       build.bat "Visual Studio 18 2026"
+REM       build.bat "Visual Studio 17 2022"
+set "GENERATOR=%~1"
+
 if not exist "%BUILD_DIR%" (
     mkdir "%BUILD_DIR%"
 )
@@ -10,9 +18,16 @@ if not exist "%BUILD_DIR%" (
 cd "%BUILD_DIR%"
 
 echo [*] Running CMake...
-cmake .. -G "Visual Studio 17 2022" -A x64
+if "%GENERATOR%"=="" (
+    echo     Generator: auto-detect ^(newest Visual Studio installed^)
+    cmake .. -A x64
+) else (
+    echo     Generator: %GENERATOR%
+    cmake .. -G "%GENERATOR%" -A x64
+)
 if %ERRORLEVEL% NEQ 0 (
     echo [!] CMake configuration failed.
+    echo     Tip: if you switched Visual Studio versions, delete the "%BUILD_DIR%" folder and retry.
     exit /b %ERRORLEVEL%
 )
 
@@ -23,5 +38,5 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b %ERRORLEVEL%
 )
 
-echo [+] Build successful! Output: %BUILD_DIR%\Release\RadTune.exe
+echo [+] Build successful! Output: %BUILD_DIR%\Release\RadTune.exe and RadTuneGUI.exe
 endlocal

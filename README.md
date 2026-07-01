@@ -28,6 +28,10 @@ Simply run:
 ```bash
 build.bat
 ```
+By default CMake auto-detects the newest Visual Studio installed (2022, 2026, …). To force a specific version, pass the generator name:
+```bash
+build.bat "Visual Studio 18 2026"
+```
 
 ### Manual Build
 ```bash
