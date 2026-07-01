@@ -91,8 +91,15 @@ Prefer not to type commands? `RadTuneGUI.exe` is a small native frontend for the
 - Keep `RadTuneGUI.exe` **next to** `RadTune.exe` (both land in `build/Release/`); the GUI looks for the CLI in its own folder.
 - It requests administrator rights on launch, so the tuning it triggers has the privileges ADLX needs.
 - **Apply now** runs the tuning immediately; **Create schedule** registers the Task Scheduler entry with the chosen trigger (logon / startup / daily); **Show status** / **Remove schedule** manage it.
+- **Read from GPU** pulls the card's current values into the form (via `RadTune -get`).
+- The form **remembers your last settings** between runs (stored under `HKCU\Software\RadTune`).
 
 The GUI is a thin wrapper — the CLI remains the engine and is fully usable on its own.
+
+The CLI also exposes a machine-readable query used by the GUI:
+```bash
+RadTune.exe -get [gpu=N]   # prints current tuning as key=value lines (core=, volt=, power=, ...)
+```
 
 ## Why RadTune? (Solving Adrenalin Resets)
 

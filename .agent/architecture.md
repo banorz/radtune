@@ -26,9 +26,10 @@ src/
   ProfileParser.{h,cpp} # hand-rolled string-based parser for Adrenalin-exported XML profiles
   Scheduler.{h,cpp} # Windows Task Scheduler integration (the -schedule verb)
 gui/
-  RadTuneGui.cpp    # RadTuneGUI.exe — native Win32 form; builds -set/-load/-schedule and runs RadTune.exe
+  RadTuneGui.cpp    # RadTuneGUI.exe — native Win32 form; builds -set/-load/-get/-schedule and runs RadTune.exe
   RadTuneGui.manifest # requireAdministrator + Common Controls v6
-  RadTuneGui.rc     # embeds the manifest
+  RadTuneGui.rc     # embeds the manifest + app icon
+  RadTune.ico       # multi-size app icon (generated)
 adlx_sdk/           # ADLX SDK (NOT in repo — placeholder only)
 CMakeLists.txt
 build.bat           # one-click build (builds both exes)
@@ -41,7 +42,9 @@ Plain Win32 + common controls (no ImGui, no .NET — zero extra dependencies). C
 - Locates `RadTune.exe` next to itself (`GetModuleFileNameW` → same dir).
 - Builds a command line from the form (`-set` / `-load`, optionally wrapped in `-schedule <trigger>`), runs it via `CreateProcessW` with a redirected stdout pipe (`CREATE_NO_WINDOW`), strips ANSI escapes, and shows the result in a read-only edit box.
 - Ships an **elevation manifest** (`requireAdministrator`); the child `RadTune.exe` inherits admin rights, which tuning and highest-privileges scheduling both need.
-- Buttons: **Apply now** (`-set`/`-load`), **Create schedule** (`-schedule <logon|startup|daily=HH:MM> …`), **Show status**, **Remove schedule**.
+- Buttons: **Apply now** (`-set`/`-load`), **Read from GPU** (`-get`, prefills the form), **Create schedule** (`-schedule <logon|startup|daily=HH:MM> …`), **Show status**, **Remove schedule**.
+- **Remembers the form** between runs in the registry (`HKCU\Software\RadTune`), loaded on open / saved on each action and on close.
+- Look: painted header strip with the app icon + Segoe UI, `GroupBox` sections (Tuning / Automation / Output), Consolas in the output box. Icon is `gui/RadTune.ico` (multi-size), embedded via `RadTuneGui.rc` (resource id 101) and set as the window/taskbar icon.
 
 ## Entry point & dispatch — [main.cpp](../src/main.cpp)
 
@@ -50,6 +53,7 @@ Plain Win32 + common controls (no ImGui, no .NET — zero extra dependencies). C
 3. `g_ADLX.Initialize()` → get `IADLXGPUTuningServices` + `IADLXGPUList`.
 4. Verb dispatch on `argv[1]`:
    - `-list` → `ShowGPUSettings()` per GPU (reads GFX/VRAM/Fan/Power via ADLX).
+   - `-get [gpu=N]` → `PrintGpuValues()` — same reads as `-list` but emitted as machine-readable `key=value` lines (`core=`, `coremin=`, `volt=`, `vram=`, `power=`, `zerorpm=`). Consumed by the GUI's "Read from GPU".
    - `-set ...` → parse `key=value` args → `ApplySettings()`.
    - `-load <xml> [gpu=N]` → `ProfileParser::Parse()` → `LoadProfileOnGpu()` → `ApplySettings()`.
 5. `g_ADLX.Terminate()`.

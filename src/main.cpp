@@ -240,6 +240,65 @@ void LoadProfileOnGpu(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices,
 }
 
 
+// Prints the GPU's current tuning as machine-readable key=value lines.
+// Consumed by RadTuneGUI's "Read from GPU" button. Only supported fields print.
+void PrintGpuValues(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices) {
+    adlx_bool supported = false;
+
+    tuningServices->IsSupportedManualGFXTuning(gpu, &supported);
+    if (supported) {
+        IADLXInterfacePtr ifc;
+        tuningServices->GetManualGFXTuning(gpu, &ifc);
+        IADLXManualGraphicsTuning2Ptr gfx2(ifc);
+        if (gfx2) {
+            adlx_int minFreq, maxFreq, voltage;
+            gfx2->GetGPUMinFrequency(&minFreq);
+            gfx2->GetGPUMaxFrequency(&maxFreq);
+            gfx2->GetGPUVoltage(&voltage);
+            std::cout << "core=" << maxFreq << "\ncoremin=" << minFreq << "\nvolt=" << voltage << "\n";
+        }
+    }
+
+    supported = false;
+    tuningServices->IsSupportedManualVRAMTuning(gpu, &supported);
+    if (supported) {
+        IADLXInterfacePtr ifc;
+        tuningServices->GetManualVRAMTuning(gpu, &ifc);
+        IADLXManualVRAMTuning2Ptr vram2(ifc);
+        if (vram2) {
+            adlx_int maxFreq;
+            vram2->GetMaxVRAMFrequency(&maxFreq);
+            std::cout << "vram=" << maxFreq << "\n";
+        }
+    }
+
+    supported = false;
+    tuningServices->IsSupportedManualPowerTuning(gpu, &supported);
+    if (supported) {
+        IADLXInterfacePtr ifc;
+        tuningServices->GetManualPowerTuning(gpu, &ifc);
+        IADLXManualPowerTuningPtr power(ifc);
+        if (power) {
+            adlx_int powerLimit;
+            power->GetPowerLimit(&powerLimit);
+            std::cout << "power=" << powerLimit << "\n";
+        }
+    }
+
+    supported = false;
+    tuningServices->IsSupportedManualFanTuning(gpu, &supported);
+    if (supported) {
+        IADLXInterfacePtr ifc;
+        tuningServices->GetManualFanTuning(gpu, &ifc);
+        IADLXManualFanTuningPtr fan(ifc);
+        if (fan) {
+            adlx_bool zeroRPM;
+            fan->GetZeroRPMState(&zeroRPM);
+            std::cout << "zerorpm=" << (zeroRPM ? 1 : 0) << "\n";
+        }
+    }
+}
+
 int main(int argc, char* argv[]) {
     // Print Banner
     std::cout << "\033[1;31m" << "  ____           _ _____                 " << "\033[0m" << std::endl;
@@ -273,6 +332,17 @@ int main(int argc, char* argv[]) {
                 IADLXGPUPtr gpu;
                 gpus->At(i, &gpu);
                 ShowGPUSettings(gpu, tuningServices);
+            }
+        } else if (cmd == "-get") {
+            int targetGpu = 0;
+            for (int i = 2; i < argc; ++i) {
+                std::string arg = argv[i];
+                if (arg.find("gpu=") == 0) targetGpu = std::stoi(arg.substr(4));
+            }
+            if (targetGpu < (int)gpus->Size()) {
+                IADLXGPUPtr gpu;
+                gpus->At(targetGpu, &gpu);
+                PrintGpuValues(gpu, tuningServices);
             }
         } else if (cmd == "-load" && argc > 2) {
             std::string path = argv[2];
@@ -318,6 +388,7 @@ int main(int argc, char* argv[]) {
         } else {
             std::cout << "Usage:" << std::endl;
             std::cout << "  RadTune -list" << std::endl;
+            std::cout << "  RadTune -get [gpu=N]" << std::endl;
             std::cout << "  RadTune -set [gpu=N] [core=MHz] [coremin=MHz] [volt=mV] [vram=MHz] [power=%] [zerorpm=0|1]" << std::endl;
             std::cout << "  RadTune -load profile.xml [gpu=N]" << std::endl;
             std::cout << "  RadTune -schedule <logon|startup|daily=HH:MM> <-set ...|-load ...>" << std::endl;

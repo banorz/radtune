@@ -1,5 +1,8 @@
 #include <winuser.h>
 
+// Application icon (multi-size .ico). Referenced from the code as ID 101.
+101 ICON "RadTune.ico"
+
 // Embed the application manifest (elevation + Common Controls v6).
 // CREATEPROCESS_MANIFEST_RESOURCE_ID (1) with type RT_MANIFEST (24).
 1 RT_MANIFEST "RadTuneGui.manifest"
