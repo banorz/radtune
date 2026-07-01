@@ -44,7 +44,7 @@ Plain Win32 + common controls (no ImGui, no .NET — zero extra dependencies). C
 - Ships an **elevation manifest** (`requireAdministrator`); the child `RadTune.exe` inherits admin rights, which tuning and highest-privileges scheduling both need.
 - Buttons: **Apply now** (`-set`/`-load`), **Read from GPU** (`-get`, prefills the form), **Create schedule** (`-schedule <logon|startup|daily=HH:MM> …`), **Show status**, **Remove schedule**.
 - **Remembers the form** between runs in the registry (`HKCU\Software\RadTune`), loaded on open / saved on each action and on close.
-- Look: painted header strip with the app icon + Segoe UI, `GroupBox` sections (Tuning / Automation / Output), Consolas in the output box. Icon is `gui/RadTune.ico` (multi-size), embedded via `RadTuneGui.rc` (resource id 101) and set as the window/taskbar icon.
+- Look: painted header strip with the app icon + Segoe UI, `GroupBox` sections (Tuning / Automation / Output), Consolas in the output box. Push buttons are **owner-drawn** (`BS_OWNERDRAW` + `WM_DRAWITEM` → `DrawButton()`) with explicit colours — stock Win11 buttons could render grey-on-grey under dark mode; owner-draw makes the label contrast theme-independent (primary "Apply now" is red). Icon is `gui/RadTune.ico` (multi-size), embedded via `RadTuneGui.rc` (resource id 101) and set as the window/taskbar icon.
 
 ## Entry point & dispatch — [main.cpp](../src/main.cpp)
 

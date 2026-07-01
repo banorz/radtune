@@ -176,7 +176,9 @@ HWND MkEdit(HWND p, int id, int x, int y, int w, DWORD extra = 0) {
     return Mk(L"EDIT", L"", WS_TABSTOP | extra, WS_EX_CLIENTEDGE, x, y, w, EDH, p, id, g_font);
 }
 HWND MkButton(HWND p, int id, const wchar_t* t, int x, int y, int w, int h = 28) {
-    return Mk(L"BUTTON", t, WS_TABSTOP | BS_PUSHBUTTON, 0, x, y, w, h, p, id, g_font);
+    // Owner-drawn so text contrast never depends on the system button theme
+    // (Win11 dark mode can render stock buttons grey-on-grey). See DrawButton().
+    return Mk(L"BUTTON", t, WS_TABSTOP | BS_OWNERDRAW, 0, x, y, w, h, p, id, g_font);
 }
 HWND MkCombo(HWND p, int id, int x, int y, int w, std::initializer_list<const wchar_t*> items) {
     HWND c = Mk(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, 0, x, y, w, 240, p, id, g_font);
@@ -419,6 +421,50 @@ void PaintHeader(HWND w, HDC hdc) {
     SelectObject(hdc, old);
 }
 
+// Owner-draw for push buttons: explicit colours so the label is always legible.
+void DrawButton(LPDRAWITEMSTRUCT dis) {
+    const bool pressed  = (dis->itemState & ODS_SELECTED) != 0;
+    const bool disabled = (dis->itemState & ODS_DISABLED) != 0;
+    const bool primary  = (int)dis->CtlID == IDC_APPLY;
+    RECT r = dis->rcItem;
+
+    COLORREF bg, fg, bd;
+    if (primary) {
+        bg = pressed ? RGB(196, 20, 28) : RGB(224, 32, 40);
+        fg = disabled ? RGB(240, 200, 200) : RGB(255, 255, 255);
+        bd = RGB(168, 18, 24);
+    } else {
+        bg = pressed ? RGB(224, 226, 230) : RGB(250, 250, 250);
+        fg = disabled ? RGB(150, 152, 156) : RGB(28, 28, 30);
+        bd = RGB(150, 154, 160);
+    }
+
+    HBRUSH fill = CreateSolidBrush(bg);
+    FillRect(dis->hDC, &r, fill);
+    DeleteObject(fill);
+
+    HPEN pen = CreatePen(PS_SOLID, 1, bd);
+    HGDIOBJ oldPen = SelectObject(dis->hDC, pen);
+    HGDIOBJ oldBr = SelectObject(dis->hDC, GetStockObject(NULL_BRUSH));
+    Rectangle(dis->hDC, r.left, r.top, r.right, r.bottom);
+    SelectObject(dis->hDC, oldPen);
+    SelectObject(dis->hDC, oldBr);
+    DeleteObject(pen);
+
+    wchar_t txt[64] = { 0 };
+    GetWindowTextW(dis->hwndItem, txt, 64);
+    SetBkMode(dis->hDC, TRANSPARENT);
+    SetTextColor(dis->hDC, fg);
+    HGDIOBJ oldFont = SelectObject(dis->hDC, g_font);
+    DrawTextW(dis->hDC, txt, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(dis->hDC, oldFont);
+
+    if (dis->itemState & ODS_FOCUS) {
+        RECT fr = r; InflateRect(&fr, -3, -3);
+        DrawFocusRect(dis->hDC, &fr);
+    }
+}
+
 LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_CREATE:
@@ -434,6 +480,11 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         PaintHeader(w, hdc);
         EndPaint(w, &ps);
         return 0;
+    }
+    case WM_DRAWITEM: {
+        auto* dis = (LPDRAWITEMSTRUCT)lp;
+        if (dis->CtlType == ODT_BUTTON) { DrawButton(dis); return TRUE; }
+        return DefWindowProcW(w, msg, wp, lp);
     }
     case WM_COMMAND:
         switch (LOWORD(wp)) {
