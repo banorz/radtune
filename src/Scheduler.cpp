@@ -114,11 +114,33 @@ std::string BuildTaskXml(const std::string& triggerXml, const std::string& exePa
     return xml.str();
 }
 
-// system() forwards to `cmd /c <command>`. cmd only strips outer quotes when the
-// whole string both starts and ends with one; our commands start with `schtasks`
-// and end with a flag, so inner path quotes are preserved as-is.
+// Runs a schtasks command and returns its exit code. We use CreateProcess with
+// STARTF_USESTDHANDLES (inheriting our own std handles) rather than std::system:
+// when RadTune runs under the GUI (no console, stdout redirected to a pipe),
+// std::system's child does NOT reliably inherit that pipe, so schtasks output
+// was lost - that's why "Show status" appeared to do nothing. Passing our std
+// handles explicitly makes schtasks write to wherever RadTune's stdout points
+// (the GUI pipe, or the console when run directly). CreateProcess only parses
+// the first token for the executable, so quoted paths in the args are preserved.
 int RunSchtasks(const std::string& cmdline) {
-    return std::system(cmdline.c_str());
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
+    si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+    si.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
+
+    PROCESS_INFORMATION pi{};
+    std::string cmd = cmdline;  // CreateProcess may modify the buffer
+    if (!CreateProcessA(nullptr, &cmd[0], nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi))
+        return -1;
+
+    CloseHandle(pi.hThread);
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess);
+    return (int)code;
 }
 
 } // namespace
