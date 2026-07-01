@@ -17,11 +17,21 @@ A lightweight command-line tool to tune AMD GPU parameters using the AMD ADLX SD
 
 - **Windows 10/11**
 - **AMD Radeon GPU** (Navi 2x/3x recommended for full feature support).
-- **AMD ADLX SDK** (included in `adlx_sdk/` directory).
+- **AMD ADLX SDK** — vendored as a pinned git submodule in `adlx_sdk/` (ADLX V1.4). Fetch it with `git submodule update --init` (see below).
 - **CMake** (v3.10+)
 - **Visual Studio 2022** (with C++ development workload).
 
 ## How to Build
+
+### Getting the source
+The ADLX SDK is a **pinned git submodule** (`adlx_sdk/`), so clone with submodules:
+```bash
+git clone --recurse-submodules https://github.com/banorz/radtune.git
+```
+Already cloned without it? Pull the SDK in:
+```bash
+git submodule update --init
+```
 
 ### Using the provided batch script
 Simply run:

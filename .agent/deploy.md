@@ -10,14 +10,29 @@ This is a locally-built desktop tool — there is no server deploy. "Deploy" her
 - **CMake 3.10+**.
 - **AMD ADLX SDK** — see the gotcha below.
 
-## Gotcha #1 — the ADLX SDK is not in the repo
+## Gotcha #1 — the ADLX SDK is a git submodule
 
-`adlx_sdk/` is tracked as a placeholder only (the actual SDK is excluded to keep the repo small). Before the build can resolve includes like `IGPUManualGFXTuning.h`, you must:
+`adlx_sdk/` is a **git submodule** pinned to the official GPUOpen ADLX repo
+(`https://github.com/GPUOpen-LibrariesAndSDKs/ADLX.git`) at **V1.4** (commit
+`36d37dab`). It is NOT copied into this repo's history — the build resolves
+`ADLX_INCLUDE_DIR = adlx_sdk/SDK/Include` from the checked-out submodule.
 
-1. Download the ADLX SDK from AMD (part of the GPUOpen ADLX distribution).
-2. Place it so that headers live under `adlx_sdk/SDK/Include` (this is what `CMakeLists.txt` sets as `ADLX_INCLUDE_DIR`).
+Fetch it before building:
 
-If the build fails on `#include "IGPUManual*.h"` or `ADLXHelper.h` dependencies, this is why.
+```bash
+git clone --recurse-submodules https://github.com/banorz/radtune.git   # fresh clone
+# or, in an existing clone:
+git submodule update --init
+```
+
+If the build fails on `#include "IGPUManual*.h"` or `ADLXHelper.h` dependencies,
+the submodule isn't checked out — run the `submodule update` above.
+
+**Why a submodule** (not vendored): the ADLX SDK is under AMD's own licence
+agreement (`adlx_sdk/ADLX SDK License Agreement.pdf`), not a permissive one, so
+we don't redistribute its files here. The submodule pins the exact version for
+reproducible builds while users fetch the SDK from AMD directly. To bump it:
+`cd adlx_sdk && git checkout <new-tag> && cd .. && git add adlx_sdk && git commit`.
 
 ## Build
 
