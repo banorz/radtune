@@ -297,7 +297,7 @@ int main(int argc, char* argv[]) {
     std::cout << "\033[1;31m" << " |  _ \\ __ _  __| |_   _|   _ _ __   ___ " << "\033[0m" << std::endl;
     std::cout << "\033[1;31m" << " | |_) / _` |/ _` | | || | | | '_ \\ / _ \\" << "\033[0m" << std::endl;
     std::cout << "\033[1;31m" << " |  _ < (_| | (_| | | || |_| | | | |  __/" << "\033[0m" << std::endl;
-    std::cout << "\033[1;31m" << " |_| \\_\\__,_|\\__,_| |_| \\__,_|_| |_|\\___|" << "\033[0m" << " v1.1 (ADLX)" << std::endl;
+    std::cout << "\033[1;31m" << " |_| \\_\\__,_|\\__,_| |_| \\__,_|_| |_|\\___|" << "\033[0m" << " v1.2.0 (ADLX)" << std::endl;
 
     // Task Scheduler management does not need the GPU/ADLX; handle it first.
     int scheduleExit = 0;
@@ -387,7 +387,7 @@ int main(int argc, char* argv[]) {
             std::cout << "  RadTune -schedule status | remove" << std::endl;
         }
     } else {
-        std::cout << "RadTune v1.1 (ADLX based)" << std::endl;
+        std::cout << "RadTune v1.2.0 (ADLX based)" << std::endl;
         std::cout << "Usage: RadTune [-list | -set ... | -load ...]" << std::endl;
     }
 
