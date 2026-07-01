@@ -283,6 +283,12 @@ void PrintGpuValues(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices) {
         fan->GetZeroRPMState(&zeroRPM);
         std::cout << "zerorpm=" << (zeroRPM ? 1 : 0) << "\n";
     }
+
+    // Flush now. When stdout is a pipe (launched by the GUI) it is block-
+    // buffered; these lines use "\n", not std::endl, so without an explicit
+    // flush they sit in the buffer and are lost when ADLX teardown skips the
+    // normal exit-time flush. From a console each "\n" flushes, hiding the bug.
+    std::cout.flush();
 }
 
 int main(int argc, char* argv[]) {
