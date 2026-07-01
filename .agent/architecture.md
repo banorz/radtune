@@ -1,0 +1,49 @@
+# Architecture
+
+## Stack
+
+- **Language**: C++17.
+- **Build**: CMake 3.10+ (Visual Studio 17 2022 generator, x64) via [build.bat](../build.bat) / [CMakeLists.txt](../CMakeLists.txt).
+- **GPU control**: AMD **ADLX SDK** (headers under `adlx_sdk/SDK/Include`, not committed — see [deploy.md](deploy.md)).
+- **Platform**: Win32 (`User32` linked; ADLX is loaded dynamically from the installed driver).
+
+## Repo layout
+
+```
+src/
+  main.cpp          # CLI entry point + verb dispatch + tuning read/apply helpers
+  ADLXHelper.{h,cpp}# ADLX SDK bootstrap wrapper (g_ADLX: Initialize / GetSystemServices / Terminate)
+  WinAPIs.cpp       # Win32 -> ADLX platform abstraction (atomics, LoadLibrary) — from the AMD SDK sample
+  ProfileParser.{h,cpp} # hand-rolled string-based parser for Adrenalin-exported XML profiles
+  Scheduler.{h,cpp} # Windows Task Scheduler integration (the -schedule verb)
+adlx_sdk/           # ADLX SDK (NOT in repo — placeholder only)
+CMakeLists.txt
+build.bat           # one-click build
+```
+
+## Entry point & dispatch — [main.cpp](../src/main.cpp)
+
+1. Print banner.
+2. **`HandleScheduleVerb(argc, argv, exitCode)`** ([main.cpp:26](../src/main.cpp:26)) — intercepts `-schedule` **before** ADLX init and returns early. Registering a Task Scheduler task doesn't need the GPU, so ADLX is never touched for this path. Details in [automation.md](automation.md).
+3. `g_ADLX.Initialize()` → get `IADLXGPUTuningServices` + `IADLXGPUList`.
+4. Verb dispatch on `argv[1]`:
+   - `-list` → `ShowGPUSettings()` per GPU (reads GFX/VRAM/Fan/Power via ADLX).
+   - `-set ...` → parse `key=value` args → `ApplySettings()`.
+   - `-load <xml> [gpu=N]` → `ProfileParser::Parse()` → `LoadProfileOnGpu()` → `ApplySettings()`.
+5. `g_ADLX.Terminate()`.
+
+## Module responsibilities
+
+- **ADLXHelper** — owns the SDK lifecycle via the global `g_ADLX`. Everything GPU-related goes through the services it exposes.
+- **ProfileParser** — parses AMD Adrenalin `*.xml` performance profiles with a manual string scanner (no XML lib). Reads `<GPU DevID RevID>` then repeated `<FEATURE ID Enabled>` blocks each containing `<STATES>/<STATE ID Value Enabled/>`. Result is a `GPUProfile` with `features` keyed by feature ID. See [ProfileParser.cpp](../src/ProfileParser.cpp).
+- **Scheduler** — pure Win32 + STL, no ADLX. Generates a Task Scheduler XML and registers it with `schtasks`. See [automation.md](automation.md).
+
+## Tuning value conventions (important, non-obvious)
+
+These live in `ApplySettings()` / the `-set` parser in [main.cpp](../src/main.cpp):
+
+- **Sentinels for "unset"**: frequency fields and `zerorpm` use `-1`; voltage and power use `-999`. A field is only applied when it differs from its sentinel — so partial `-set` commands are safe.
+- **Voltage is an OFFSET in mV** (undervolt), not an absolute voltage. Out-of-range offsets make `SetGPUVoltage` return an ADLX error (surfaced to stderr).
+- **Power limit is a percentage** (e.g. `power=15` → +15%).
+- **Profile feature IDs** used by `-load` ([main.cpp](../src/main.cpp), `LoadProfileOnGpu`): **ID 12 = undervolt** (→ voltage), **ID 3 = power limit** (→ power). Only these two are mapped from XML today; other feature IDs in the profile are ignored.
+- **API versioning**: ADLX exposes `ManualGraphicsTuning1` (discrete states) vs `2` (min/max/voltage). The code prefers `...Tuning2` and falls back — reflects RDNA2 vs RDNA3 differences.

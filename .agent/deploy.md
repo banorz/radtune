@@ -1,0 +1,57 @@
+# Build & distribution
+
+This is a locally-built desktop tool — there is no server deploy. "Deploy" here means: build the exe, and the non-obvious things around getting it to run.
+
+## Prerequisites
+
+- **Windows 10/11**.
+- **AMD Radeon GPU** with Adrenalin driver installed (Navi 2x / Navi 3x recommended for full manual-tuning support). ADLX ships *with the driver* — there is no separate runtime to install or bundle.
+- **Visual Studio 2022** with the "Desktop development with C++" workload.
+- **CMake 3.10+**.
+- **AMD ADLX SDK** — see the gotcha below.
+
+## Gotcha #1 — the ADLX SDK is not in the repo
+
+`adlx_sdk/` is tracked as a placeholder only (the actual SDK is excluded to keep the repo small). Before the build can resolve includes like `IGPUManualGFXTuning.h`, you must:
+
+1. Download the ADLX SDK from AMD (part of the GPUOpen ADLX distribution).
+2. Place it so that headers live under `adlx_sdk/SDK/Include` (this is what `CMakeLists.txt` sets as `ADLX_INCLUDE_DIR`).
+
+If the build fails on `#include "IGPUManual*.h"` or `ADLXHelper.h` dependencies, this is why.
+
+## Build
+
+One-click:
+
+```bash
+build.bat
+```
+
+It runs (from [build.bat](../build.bat)):
+
+```bash
+cmake .. -G "Visual Studio 17 2022" -A x64
+cmake --build . --config Release
+```
+
+Output: **`build/Release/RadTune.exe`**.
+
+Manual equivalent:
+
+```bash
+mkdir build && cd build
+cmake ..
+cmake --build . --config Release
+```
+
+## Gotcha #2 — elevation is required at runtime
+
+ADLX **write** operations (`-set`, `-load`) and creating the scheduled task (`-schedule`) need **Administrator** rights. Read-only `-list` works unelevated. When automating, the `-schedule` verb creates the task with `RunLevel=HighestAvailable` so the scheduled run is elevated automatically — but you must run the `-schedule` command itself once from an elevated console. See [automation.md](automation.md).
+
+## Gotcha #3 — ANSI color output
+
+`main.cpp` prints ANSI escape codes (`\033[1;3xm`) for the banner and status. These render correctly in Windows Terminal and modern conhost (VT processing on by default). In a very old console host the raw codes may show as garbage — not a bug, a terminal capability issue.
+
+## Distribution
+
+Ship just `RadTune.exe`. No DLLs to bundle: ADLX is resolved from the installed AMD driver at runtime (`WinAPIs.cpp` does the dynamic load). There is currently no CI, code signing, or installer.
