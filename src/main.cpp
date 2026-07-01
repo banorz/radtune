@@ -241,61 +241,47 @@ void LoadProfileOnGpu(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices,
 
 
 // Prints the GPU's current tuning as machine-readable key=value lines.
-// Consumed by RadTuneGUI's "Read from GPU" button. Only supported fields print.
+// Consumed by RadTuneGUI's "Read from GPU" button.
+//
+// NOTE: unlike ShowGPUSettings(), this does NOT gate on IsSupportedManual*Tuning.
+// On some drivers/GPUs those queries return false even though GetManual*Tuning
+// hands back a usable interface - which is exactly why ApplySettings() (the -set
+// path) skips the check and works. We mirror that here so reading matches writing.
 void PrintGpuValues(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices) {
-    adlx_bool supported = false;
+    IADLXInterfacePtr ifc;
 
-    tuningServices->IsSupportedManualGFXTuning(gpu, &supported);
-    if (supported) {
-        IADLXInterfacePtr ifc;
-        tuningServices->GetManualGFXTuning(gpu, &ifc);
-        IADLXManualGraphicsTuning2Ptr gfx2(ifc);
-        if (gfx2) {
-            adlx_int minFreq, maxFreq, voltage;
-            gfx2->GetGPUMinFrequency(&minFreq);
-            gfx2->GetGPUMaxFrequency(&maxFreq);
-            gfx2->GetGPUVoltage(&voltage);
-            std::cout << "core=" << maxFreq << "\ncoremin=" << minFreq << "\nvolt=" << voltage << "\n";
-        }
+    tuningServices->GetManualGFXTuning(gpu, &ifc);
+    IADLXManualGraphicsTuning2Ptr gfx2(ifc);
+    if (gfx2) {
+        adlx_int minFreq, maxFreq, voltage;
+        gfx2->GetGPUMinFrequency(&minFreq);
+        gfx2->GetGPUMaxFrequency(&maxFreq);
+        gfx2->GetGPUVoltage(&voltage);
+        std::cout << "core=" << maxFreq << "\ncoremin=" << minFreq << "\nvolt=" << voltage << "\n";
     }
 
-    supported = false;
-    tuningServices->IsSupportedManualVRAMTuning(gpu, &supported);
-    if (supported) {
-        IADLXInterfacePtr ifc;
-        tuningServices->GetManualVRAMTuning(gpu, &ifc);
-        IADLXManualVRAMTuning2Ptr vram2(ifc);
-        if (vram2) {
-            adlx_int maxFreq;
-            vram2->GetMaxVRAMFrequency(&maxFreq);
-            std::cout << "vram=" << maxFreq << "\n";
-        }
+    tuningServices->GetManualVRAMTuning(gpu, &ifc);
+    IADLXManualVRAMTuning2Ptr vram2(ifc);
+    if (vram2) {
+        adlx_int maxFreq;
+        vram2->GetMaxVRAMFrequency(&maxFreq);
+        std::cout << "vram=" << maxFreq << "\n";
     }
 
-    supported = false;
-    tuningServices->IsSupportedManualPowerTuning(gpu, &supported);
-    if (supported) {
-        IADLXInterfacePtr ifc;
-        tuningServices->GetManualPowerTuning(gpu, &ifc);
-        IADLXManualPowerTuningPtr power(ifc);
-        if (power) {
-            adlx_int powerLimit;
-            power->GetPowerLimit(&powerLimit);
-            std::cout << "power=" << powerLimit << "\n";
-        }
+    tuningServices->GetManualPowerTuning(gpu, &ifc);
+    IADLXManualPowerTuningPtr power(ifc);
+    if (power) {
+        adlx_int powerLimit;
+        power->GetPowerLimit(&powerLimit);
+        std::cout << "power=" << powerLimit << "\n";
     }
 
-    supported = false;
-    tuningServices->IsSupportedManualFanTuning(gpu, &supported);
-    if (supported) {
-        IADLXInterfacePtr ifc;
-        tuningServices->GetManualFanTuning(gpu, &ifc);
-        IADLXManualFanTuningPtr fan(ifc);
-        if (fan) {
-            adlx_bool zeroRPM;
-            fan->GetZeroRPMState(&zeroRPM);
-            std::cout << "zerorpm=" << (zeroRPM ? 1 : 0) << "\n";
-        }
+    tuningServices->GetManualFanTuning(gpu, &ifc);
+    IADLXManualFanTuningPtr fan(ifc);
+    if (fan) {
+        adlx_bool zeroRPM;
+        fan->GetZeroRPMState(&zeroRPM);
+        std::cout << "zerorpm=" << (zeroRPM ? 1 : 0) << "\n";
     }
 }
 

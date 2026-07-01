@@ -302,6 +302,7 @@ void OnReadGpu() {
     SetCombo(g_source, 0);  // switch to Manual so fields are visible/editable
     UpdateSourceState();
 
+    bool got = false;
     size_t pos = 0;
     while (pos < clean.size()) {
         size_t nl = clean.find("\r\n", pos);
@@ -311,14 +312,18 @@ void OnReadGpu() {
         if (eq == std::string::npos) continue;
         const std::string key = line.substr(0, eq);
         const std::wstring v = Trim(AcpToWide(line.substr(eq + 1)));
+        bool known = true;
         if (key == "core") SetWindowTextW(g_core, v.c_str());
         else if (key == "coremin") SetWindowTextW(g_coremin, v.c_str());
         else if (key == "volt") SetWindowTextW(g_volt, v.c_str());
         else if (key == "vram") SetWindowTextW(g_vram, v.c_str());
         else if (key == "power") SetWindowTextW(g_power, v.c_str());
         else if (key == "zerorpm") SetCombo(g_zerorpm, v == L"1" ? 1 : 2);
+        else known = false;
+        if (known) got = true;
     }
-    ShowOutput("> " + WideToAcp(cmd) + "\r\n\r\n" + raw);
+    const std::string note = got ? "" : "[GUI] No tuning values were read from the GPU.\r\n\r\n";
+    ShowOutput(note + "> " + WideToAcp(cmd) + "\r\n\r\n" + raw);
     SaveSettings();
 }
 
