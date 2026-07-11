@@ -166,11 +166,11 @@ void ApplySettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices, in
     tuningServices->GetManualGFXTuning(gpu, &ifc);
     IADLXManualGraphicsTuning2Ptr gfx2(ifc);
     if (gfx2) {
-        if (coreMaxFreq > 0) {
+        if (coreMaxFreq != 0) {
             gfx2->SetGPUMaxFrequency(coreMaxFreq);
             std::cout << " -> GFX Max Frequency: " << coreMaxFreq << " MHz" << std::endl;
         }
-        if (coreMinFreq > 0) {
+        if (coreMinFreq != 0) {
             gfx2->SetGPUMinFrequency(coreMinFreq);
             std::cout << " -> GFX Min Frequency: " << coreMinFreq << " MHz" << std::endl;
         }
