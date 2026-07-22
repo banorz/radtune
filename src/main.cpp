@@ -482,6 +482,14 @@ int main(int argc, char* argv[]) {
         std::cout << "Usage: RadTune [-list | -set ... | -load ...]" << std::endl;
     }
 
+    // ADLX invalidates every outstanding interface when Terminate() runs;
+    // releasing a smart pointer *after* that dereferences a freed vtable -> an
+    // access violation on exit (see the WARNING in ADLXHelper.h). Release the
+    // interfaces we still hold BEFORE terminating so teardown is clean. Any
+    // per-GPU interfaces are already scoped inside the dispatch above.
+    tuningServices = nullptr;
+    gpus = nullptr;
+
     g_ADLX.Terminate();
     return 0;
 }

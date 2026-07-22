@@ -11,6 +11,15 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   via `-set`, read it back with `-get` and `-list`, and pick it from the GUI's
   "VRAM mem timing" dropdown. Gated per-GPU by ADLX `IsSupportedMemoryTiming`.
 
+### Fixed
+- **Negative core/voltage offsets are now applied.** Tuning params moved from
+  magic sentinels to `std::optional`, so a valid `core=-500` (RDNA4 offset) is no
+  longer indistinguishable from "unset" and silently dropped.
+- **Access violation on exit.** ADLX interfaces are now released before
+  `g_ADLX.Terminate()`; releasing them afterwards dereferenced freed vtables and
+  crashed the process on teardown (non-zero exit code, harmless but ugly for
+  scripts and the scheduler).
+
 ## [1.2.0] - 2026-07-01
 
 Automation & GUI release. RadTune can now schedule itself and ships an optional
