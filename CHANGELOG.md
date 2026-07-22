@@ -10,6 +10,11 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   Control" preset (`default` / `fast` / `fast2` / `auto` / `level1` / `level2`)
   via `-set`, read it back with `-get` and `-list`, and pick it from the GUI's
   "VRAM mem timing" dropdown. Gated per-GPU by ADLX `IsSupportedMemoryTiming`.
+- **`-monitor` verb** — live GPU telemetry (real clock, VRAM clock, temperature,
+  hotspot, fan RPM, power, voltage, usage, VRAM used) via ADLX
+  `GetCurrentGPUMetrics`, as machine-readable `key=value` lines. Only metrics the
+  driver reports are emitted. This is where the *real* boost clock comes from,
+  since the manual-tuning interface exposes only the offset, not the base clock.
 
 ### Changed
 - **`-list` reports supported memory-timing presets per GPU** (via ADLX

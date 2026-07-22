@@ -54,7 +54,8 @@ Plain Win32 + common controls (no ImGui, no .NET — zero extra dependencies). C
 3. `g_ADLX.Initialize()` → get `IADLXGPUTuningServices` + `IADLXGPUList`.
 4. Verb dispatch on `argv[1]`:
    - `-list` → `ShowGPUSettings()` per GPU (reads GFX/VRAM/Fan/Power via ADLX).
-   - `-get [gpu=N]` → `PrintGpuValues()` — emits current tuning as machine-readable `key=value` lines (`core=`, `coremin=`, `volt=`, `vram=`, `memtiming=`, `power=`, `zerorpm=`). Consumed by the GUI's "Read from GPU". **Unlike `-list`, it does NOT gate on `IsSupportedManual*Tuning`** (those can return false on drivers/GPUs where `GetManual*Tuning` still works — same reason `ApplySettings`/`-set` skips the check). Gating it was the bug that made "Read from GPU" print nothing.
+   - `-get [gpu=N]` → `PrintGpuValues()` — emits current tuning as machine-readable `key=value` lines (`core=`, `coremin=`, `volt=`, `vram=`, `memtiming=`, `power=`, `zerorpm=`).
+   - `-monitor [gpu=N]` → `PrintGpuMetrics()` — emits **live telemetry** as `key=value` (`gpuclock=`, `vramclock=`, `temp=`, `hotspot=`, `fan=`, `power=` (watts), `boardpower=`, `voltage=`, `usage=`, `vramused=`) via `IADLXPerformanceMonitoringServices::GetCurrentGPUMetrics`. Only metrics the driver reports are emitted. Reads only, no elevation needed. Consumed by the GUI "Live" tab (on-demand Refresh). Consumed by the GUI's "Read from GPU". **Unlike `-list`, it does NOT gate on `IsSupportedManual*Tuning`** (those can return false on drivers/GPUs where `GetManual*Tuning` still works — same reason `ApplySettings`/`-set` skips the check). Gating it was the bug that made "Read from GPU" print nothing.
    - `-set ...` → parse `key=value` args → `ApplySettings()`.
    - `-load <xml> [gpu=N]` → `ProfileParser::Parse()` → `LoadProfileOnGpu()` → `ApplySettings()`.
 5. `g_ADLX.Terminate()`.

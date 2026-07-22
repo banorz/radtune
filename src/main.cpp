@@ -430,6 +430,33 @@ void PrintGpuValues(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices) {
     std::cout.flush();
 }
 
+// Prints the GPU's current LIVE telemetry as machine-readable key=value lines.
+// Consumed by RadTuneGUI's "Live" tab (Refresh). Unlike the tuning values, these
+// are the real, in-the-moment readings (actual boost clock, temps, fan, power).
+// Each metric is emitted only if the driver reports it, so unsupported ones are
+// silently skipped. Note: `power=` here is watts (GPU power), distinct from the
+// tuning `power=` percentage in -get.
+void PrintGpuMetrics(IADLXGPUPtr gpu, IADLXPerformanceMonitoringServicesPtr perf) {
+    IADLXGPUMetricsPtr m;
+    if (ADLX_FAILED(perf->GetCurrentGPUMetrics(gpu, &m)) || !m) {
+        std::cerr << "[!] Could not read GPU metrics." << std::endl;
+        return;
+    }
+    adlx_int i;
+    adlx_double d;
+    if (ADLX_SUCCEEDED(m->GPUClockSpeed(&i)))         std::cout << "gpuclock="  << i << "\n";
+    if (ADLX_SUCCEEDED(m->GPUVRAMClockSpeed(&i)))     std::cout << "vramclock=" << i << "\n";
+    if (ADLX_SUCCEEDED(m->GPUTemperature(&d)))        std::cout << "temp="      << d << "\n";
+    if (ADLX_SUCCEEDED(m->GPUHotspotTemperature(&d))) std::cout << "hotspot="   << d << "\n";
+    if (ADLX_SUCCEEDED(m->GPUFanSpeed(&i)))           std::cout << "fan="       << i << "\n";
+    if (ADLX_SUCCEEDED(m->GPUPower(&d)))              std::cout << "power="      << d << "\n";
+    if (ADLX_SUCCEEDED(m->GPUTotalBoardPower(&d)))    std::cout << "boardpower=" << d << "\n";
+    if (ADLX_SUCCEEDED(m->GPUVoltage(&i)))            std::cout << "voltage="   << i << "\n";
+    if (ADLX_SUCCEEDED(m->GPUUsage(&d)))              std::cout << "usage="     << d << "\n";
+    if (ADLX_SUCCEEDED(m->GPUVRAM(&i)))               std::cout << "vramused="  << i << "\n";
+    std::cout.flush();
+}
+
 int main(int argc, char* argv[]) {
     // Print Banner
     std::cout << "\033[1;31m" << "  ____           _ _____                 " << "\033[0m" << std::endl;
@@ -474,6 +501,22 @@ int main(int argc, char* argv[]) {
                 IADLXGPUPtr gpu;
                 gpus->At(targetGpu, &gpu);
                 PrintGpuValues(gpu, tuningServices);
+            }
+        } else if (cmd == "-monitor") {
+            int targetGpu = 0;
+            for (int i = 2; i < argc; ++i) {
+                std::string arg = argv[i];
+                if (arg.find("gpu=") == 0) targetGpu = std::stoi(arg.substr(4));
+            }
+            // Scoped locally so the perf-monitoring interface is released before
+            // g_ADLX.Terminate() (same teardown rule as the other interfaces).
+            IADLXPerformanceMonitoringServicesPtr perf;
+            if (ADLX_FAILED(systemServices->GetPerformanceMonitoringServices(&perf)) || !perf) {
+                std::cerr << "[!] Performance monitoring not available." << std::endl;
+            } else if (targetGpu < (int)gpus->Size()) {
+                IADLXGPUPtr gpu;
+                gpus->At(targetGpu, &gpu);
+                PrintGpuMetrics(gpu, perf);
             }
         } else if (cmd == "-load" && argc > 2) {
             std::string path = argv[2];
@@ -522,6 +565,7 @@ int main(int argc, char* argv[]) {
             std::cout << "Usage:" << std::endl;
             std::cout << "  RadTune -list" << std::endl;
             std::cout << "  RadTune -get [gpu=N]" << std::endl;
+            std::cout << "  RadTune -monitor [gpu=N]      (live telemetry: clocks, temps, fan, power)" << std::endl;
             std::cout << "  RadTune -set [gpu=N] [core=MHz] [coremin=MHz] [volt=mV] [vram=MHz] [memtiming=default|fast|fast2|auto|level1|level2] [power=%] [zerorpm=0|1]" << std::endl;
             std::cout << "  RadTune -load profile.xml [gpu=N]" << std::endl;
             std::cout << "  RadTune -schedule <logon|startup|daily=HH:MM> <-set ...|-load ...>" << std::endl;
