@@ -431,8 +431,8 @@ void BuildUi(HWND w) {
     MkButton(w, IDC_READ, L"Read from GPU", FLDX + 72, y - 1, 150, 26);
     y += 34;
 
-    g_core    = LabeledEdit(w, L"Core max (MHz)",      IDC_CORE,    y); y += 30;
-    g_coremin = LabeledEdit(w, L"Core min (MHz)",      IDC_COREMIN, y); y += 30;
+    g_core    = LabeledEdit(w, L"Core max offset (MHz)", IDC_CORE,    y); y += 30;
+    g_coremin = LabeledEdit(w, L"Core min (MHz)",        IDC_COREMIN, y); y += 30;
     g_volt    = LabeledEdit(w, L"Voltage offset (mV)", IDC_VOLT,    y); y += 30;
     g_vram    = LabeledEdit(w, L"VRAM max (MHz)",      IDC_VRAM,    y); y += 30;
 

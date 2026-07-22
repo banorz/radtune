@@ -45,6 +45,37 @@ int ParseMemTiming(const std::string& v) {
     return -1;
 }
 
+// Fills `out` with the memory-timing presets this GPU actually supports. The
+// ADLX enum lists every preset across all Radeon architectures; a given card
+// exposes only a subset (e.g. Adrenalin's "Standard"/"Accelerated"). Returns
+// false if the list could not be queried (caller should not hard-block then).
+bool GetSupportedMemTimings(IADLXManualVRAMTuning2Ptr vram2, IADLXManualVRAMTuning1Ptr vram1,
+                            std::vector<ADLX_MEMORYTIMING_DESCRIPTION>& out) {
+    IADLXMemoryTimingDescriptionListPtr list;
+    ADLX_RESULT res = ADLX_FAIL;
+    if (vram2)      res = vram2->GetSupportedMemoryTimingDescriptionList(&list);
+    else if (vram1) res = vram1->GetSupportedMemoryTimingDescriptionList(&list);
+    if (ADLX_FAILED(res) || !list) return false;
+    for (adlx_uint i = 0; i < list->Size(); ++i) {
+        IADLXMemoryTimingDescriptionPtr item;
+        if (ADLX_SUCCEEDED(list->At(i, &item)) && item) {
+            ADLX_MEMORYTIMING_DESCRIPTION d;
+            if (ADLX_SUCCEEDED(item->GetDescription(&d))) out.push_back(d);
+        }
+    }
+    return true;
+}
+
+// Comma-joins preset names, e.g. "default, fast".
+std::string JoinMemTimingNames(const std::vector<ADLX_MEMORYTIMING_DESCRIPTION>& v) {
+    std::string s;
+    for (size_t i = 0; i < v.size(); ++i) {
+        if (i) s += ", ";
+        s += MemTimingName(v[i]);
+    }
+    return s;
+}
+
 #include "ProfileParser.h"
 #include "Scheduler.h"
 
@@ -125,10 +156,10 @@ void ShowGPUSettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices) 
             gfx2->GetGPUMinFrequency(&minFreq);
             gfx2->GetGPUMaxFrequency(&maxFreq);
             gfx2->GetGPUVoltage(&voltage);
-            std::cout << std::left << std::setw(15) << " [GFX]" 
-                      << "Min: " << std::setw(8) << std::to_string(minFreq) + " MHz"
-                      << "Max: " << std::setw(8) << std::to_string(maxFreq) + " MHz"
-                      << "Volt: " << std::to_string(voltage) + " mV" << std::endl;
+            std::cout << std::left << std::setw(15) << " [GFX]"
+                      << "Core min: " << std::setw(10) << (std::to_string(minFreq) + " MHz")
+                      << "Core max offset: " << std::setw(10) << (std::to_string(maxFreq) + " MHz")
+                      << "Voltage offset: " << (std::to_string(voltage) + " mV") << std::endl;
         } else {
             IADLXManualGraphicsTuning1Ptr gfx1(manualGFXIfc);
             if (gfx1) {
@@ -169,9 +200,15 @@ void ShowGPUSettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices) 
             vram1->IsSupportedMemoryTiming(&mtSupported);
             if (mtSupported) mtRes = vram1->GetMemoryTimingDescription(&mt);
         }
-        if (mtSupported && ADLX_SUCCEEDED(mtRes))
+        if (mtSupported && ADLX_SUCCEEDED(mtRes)) {
+            std::vector<ADLX_MEMORYTIMING_DESCRIPTION> presets;
+            GetSupportedMemTimings(vram2, vram1, presets);
             std::cout << std::left << std::setw(15) << " [VRAM Timing]"
-                      << "Preset: " << MemTimingName(mt) << std::endl;
+                      << "Preset: " << std::setw(10) << MemTimingName(mt);
+            if (!presets.empty())
+                std::cout << "Supported: " << JoinMemTimingNames(presets);
+            std::cout << std::endl;
+        }
     }
 
     // 3. Fan Tuning
@@ -247,21 +284,34 @@ void ApplySettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices,
         if (memTiming) {
             const ADLX_MEMORYTIMING_DESCRIPTION mt = (ADLX_MEMORYTIMING_DESCRIPTION)*memTiming;
             adlx_bool mtSupported = false;
-            ADLX_RESULT res = ADLX_FAIL;
-            if (vram2) {
-                vram2->IsSupportedMemoryTiming(&mtSupported);
-                if (mtSupported) res = vram2->SetMemoryTimingDescription(mt);
-            } else if (vram1) {
-                vram1->IsSupportedMemoryTiming(&mtSupported);
-                if (mtSupported) res = vram1->SetMemoryTimingDescription(mt);
-            }
-            if (!mtSupported)
+            if (vram2)      vram2->IsSupportedMemoryTiming(&mtSupported);
+            else if (vram1) vram1->IsSupportedMemoryTiming(&mtSupported);
+
+            if (!mtSupported) {
                 std::cerr << " [!] Memory timing control not supported on this GPU." << std::endl;
-            else if (ADLX_SUCCEEDED(res))
-                std::cout << " -> VRAM Memory Timing: " << MemTimingName(mt) << std::endl;
-            else
-                std::cerr << " [!] Failed to set Memory Timing: " << MemTimingName(mt)
-                          << " (Error: " << res << ")" << std::endl;
+            } else {
+                // The ADLX enum is a superset across architectures; reject a
+                // preset this card doesn't expose with a clear, listed message
+                // rather than a raw ADLX error.
+                std::vector<ADLX_MEMORYTIMING_DESCRIPTION> presets;
+                const bool haveList = GetSupportedMemTimings(vram2, vram1, presets);
+                bool allowed = !haveList;  // list unavailable -> let ADLX decide
+                for (auto d : presets) if (d == mt) allowed = true;
+
+                if (!allowed) {
+                    std::cerr << " [!] Memory timing '" << MemTimingName(mt)
+                              << "' not supported on this GPU. Supported: "
+                              << JoinMemTimingNames(presets) << std::endl;
+                } else {
+                    ADLX_RESULT res = vram2 ? vram2->SetMemoryTimingDescription(mt)
+                                            : vram1->SetMemoryTimingDescription(mt);
+                    if (ADLX_SUCCEEDED(res))
+                        std::cout << " -> VRAM Memory Timing: " << MemTimingName(mt) << std::endl;
+                    else
+                        std::cerr << " [!] Failed to set Memory Timing: " << MemTimingName(mt)
+                                  << " (Error: " << res << ")" << std::endl;
+                }
+            }
         }
     }
 

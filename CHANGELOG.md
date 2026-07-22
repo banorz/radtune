@@ -11,6 +11,16 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   via `-set`, read it back with `-get` and `-list`, and pick it from the GUI's
   "VRAM mem timing" dropdown. Gated per-GPU by ADLX `IsSupportedMemoryTiming`.
 
+### Changed
+- **`-list` reports supported memory-timing presets per GPU** (via ADLX
+  `GetSupportedMemoryTimingDescriptionList`), and `-set` now rejects a preset the
+  card doesn't expose with a clear "Supported: …" message instead of a raw ADLX
+  error. The `memtiming=` names are ADLX enum values (a superset); a given card
+  exposes only a subset (e.g. Adrenalin's Standard/Accelerated).
+- **Clearer `-list` / GUI labels**: the GPU max clock is an offset, now shown as
+  "Core max offset" (CLI) and "Core max offset (MHz)" (GUI); voltage is likewise
+  labelled "Voltage offset".
+
 ### Fixed
 - **Negative core/voltage offsets are now applied.** Tuning params moved from
   magic sentinels to `std::optional`, so a valid `core=-500` (RDNA4 offset) is no
