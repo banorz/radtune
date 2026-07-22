@@ -3,6 +3,14 @@
 All notable changes to RadTune are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **VRAM memory timing control (`memtiming=`)** — set Adrenalin's "Memory Timing
+  Control" preset (`default` / `fast` / `fast2` / `auto` / `level1` / `level2`)
+  via `-set`, read it back with `-get` and `-list`, and pick it from the GUI's
+  "VRAM mem timing" dropdown. Gated per-GPU by ADLX `IsSupportedMemoryTiming`.
+
 ## [1.2.0] - 2026-07-01
 
 Automation & GUI release. RadTune can now schedule itself and ships an optional

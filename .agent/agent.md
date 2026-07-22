@@ -23,7 +23,7 @@ build.bat                                            # configure + build (VS 202
 
 RadTuneGUI.exe                                       # optional GUI frontend (shells out to RadTune.exe next to it)
 RadTune -list                                        # list GPUs + current tuning
-RadTune -set gpu=0 core=2500 coremin=2100 volt=1050 vram=2100 power=15 zerorpm=1
+RadTune -set gpu=0 core=2500 coremin=2100 volt=1050 vram=2100 memtiming=fast power=15 zerorpm=1
 RadTune -load "C:\profile.xml" [gpu=N]               # apply an Adrenalin-exported XML profile
 RadTune -schedule logon -set core=2500 volt=1050     # auto-apply via Task Scheduler (run elevated once)
 RadTune -schedule status | remove

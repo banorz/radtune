@@ -67,10 +67,11 @@ You can combine multiple parameters in a single command.
 # coremin=  (Min GPU Frequency in MHz)
 # volt=     (GPU Voltage/Offset in mV)
 # vram=     (Max VRAM Frequency in MHz)
+# memtiming=(VRAM memory timing preset: default|fast|fast2|auto|level1|level2)
 # power=    (Power Limit percentage, e.g. 15 for +15%)
 # zerorpm=  (0 to disable, 1 to enable)
 
-RadTune.exe -set gpu=0 core=2500 coremin=2100 volt=1050 vram=2100 power=15 zerorpm=1
+RadTune.exe -set gpu=0 core=2500 coremin=2100 volt=1050 vram=2100 memtiming=fast power=15 zerorpm=1
 ```
 
 ### 3. Load Tuning Profile from XML

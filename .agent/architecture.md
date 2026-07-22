@@ -54,7 +54,7 @@ Plain Win32 + common controls (no ImGui, no .NET — zero extra dependencies). C
 3. `g_ADLX.Initialize()` → get `IADLXGPUTuningServices` + `IADLXGPUList`.
 4. Verb dispatch on `argv[1]`:
    - `-list` → `ShowGPUSettings()` per GPU (reads GFX/VRAM/Fan/Power via ADLX).
-   - `-get [gpu=N]` → `PrintGpuValues()` — emits current tuning as machine-readable `key=value` lines (`core=`, `coremin=`, `volt=`, `vram=`, `power=`, `zerorpm=`). Consumed by the GUI's "Read from GPU". **Unlike `-list`, it does NOT gate on `IsSupportedManual*Tuning`** (those can return false on drivers/GPUs where `GetManual*Tuning` still works — same reason `ApplySettings`/`-set` skips the check). Gating it was the bug that made "Read from GPU" print nothing.
+   - `-get [gpu=N]` → `PrintGpuValues()` — emits current tuning as machine-readable `key=value` lines (`core=`, `coremin=`, `volt=`, `vram=`, `memtiming=`, `power=`, `zerorpm=`). Consumed by the GUI's "Read from GPU". **Unlike `-list`, it does NOT gate on `IsSupportedManual*Tuning`** (those can return false on drivers/GPUs where `GetManual*Tuning` still works — same reason `ApplySettings`/`-set` skips the check). Gating it was the bug that made "Read from GPU" print nothing.
    - `-set ...` → parse `key=value` args → `ApplySettings()`.
    - `-load <xml> [gpu=N]` → `ProfileParser::Parse()` → `LoadProfileOnGpu()` → `ApplySettings()`.
 5. `g_ADLX.Terminate()`.
@@ -72,5 +72,6 @@ These live in `ApplySettings()` / the `-set` parser in [main.cpp](../src/main.cp
 - **Sentinels for "unset"**: frequency fields and `zerorpm` use `-1`; voltage and power use `-999`. A field is only applied when it differs from its sentinel — so partial `-set` commands are safe.
 - **Voltage is an OFFSET in mV** (undervolt), not an absolute voltage. Out-of-range offsets make `SetGPUVoltage` return an ADLX error (surfaced to stderr).
 - **Power limit is a percentage** (e.g. `power=15` → +15%).
+- **VRAM memory timing (`memtiming=`)** is a *preset*, not manual sub-timings — the `ADLX_MEMORYTIMING_DESCRIPTION` enum (Adrenalin's "Memory Timing Control"). CLI accepts names `default|fast|fast2|auto|level1|level2` (or `0`-`5`); unset sentinel is `-1`. Gated by its own `IsSupportedMemoryTiming` (separate from `IsSupportedManualVRAMTuning` — a card can do manual VRAM freq but not timing presets), and read/written on `IADLXManualVRAMTuning2` with a fallback to `...Tuning1`. Not carried by Adrenalin XML profiles, so `-load` never sets it.
 - **Profile feature IDs** used by `-load` ([main.cpp](../src/main.cpp), `LoadProfileOnGpu`): **ID 12 = undervolt** (→ voltage), **ID 3 = power limit** (→ power). Only these two are mapped from XML today; other feature IDs in the profile are ignored.
 - **API versioning**: ADLX exposes `ManualGraphicsTuning1` (discrete states) vs `2` (min/max/voltage). The code prefers `...Tuning2` and falls back — reflects RDNA2 vs RDNA3 differences.

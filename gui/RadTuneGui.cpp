@@ -29,13 +29,19 @@ constexpr int LBLX = 32, FLDX = 196, FLDW = 150, EDH = 24;
 
 enum : int {
     IDC_SOURCE = 1001, IDC_GPU, IDC_READ, IDC_CORE, IDC_COREMIN, IDC_VOLT,
-    IDC_VRAM, IDC_POWER, IDC_ZERORPM, IDC_PROFILE, IDC_BROWSE, IDC_APPLY,
+    IDC_VRAM, IDC_MEMTIMING, IDC_POWER, IDC_ZERORPM, IDC_PROFILE, IDC_BROWSE, IDC_APPLY,
     IDC_TRIGGER, IDC_TIME, IDC_SCHEDULE, IDC_STATUS, IDC_REMOVE, IDC_OUTPUT
 };
 
 HFONT g_font = nullptr, g_mono = nullptr, g_title = nullptr, g_sub = nullptr;
-HWND g_source, g_gpu, g_core, g_coremin, g_volt, g_vram, g_power, g_zerorpm,
+HWND g_source, g_gpu, g_core, g_coremin, g_volt, g_vram, g_memtiming, g_power, g_zerorpm,
      g_profile, g_browse, g_trigger, g_time, g_output;
+
+// GUI combo index (1-based, 0 = "Leave unchanged") -> RadTune memtiming= token.
+const wchar_t* const MEMTIMING_TOKENS[] = {
+    L"", L"default", L"fast", L"fast2", L"auto", L"level1", L"level2"
+};
+constexpr int MEMTIMING_COUNT = 6;  // presets, excluding "Leave unchanged"
 
 const wchar_t* REG_KEY = L"Software\\RadTune";
 
@@ -144,7 +150,8 @@ void SaveSettings() {
     auto e = [](HWND h, const wchar_t* n) { RegWrite(n, GetText(h)); };
     auto c = [](HWND h, const wchar_t* n) { RegWrite(n, std::to_wstring(ComboSel(h))); };
     c(g_source, L"source"); e(g_gpu, L"gpu"); e(g_core, L"core"); e(g_coremin, L"coremin");
-    e(g_volt, L"volt"); e(g_vram, L"vram"); e(g_power, L"power"); c(g_zerorpm, L"zerorpm");
+    e(g_volt, L"volt"); e(g_vram, L"vram"); c(g_memtiming, L"memtiming"); e(g_power, L"power");
+    c(g_zerorpm, L"zerorpm");
     e(g_profile, L"profile"); c(g_trigger, L"trigger"); e(g_time, L"time");
 }
 
@@ -152,7 +159,8 @@ void LoadSettings() {
     auto e = [](HWND h, const wchar_t* n) { std::wstring v = RegRead(n); if (!v.empty()) SetWindowTextW(h, v.c_str()); };
     auto c = [](HWND h, const wchar_t* n) { std::wstring v = RegRead(n); if (!v.empty()) SetCombo(h, _wtoi(v.c_str())); };
     c(g_source, L"source"); e(g_gpu, L"gpu"); e(g_core, L"core"); e(g_coremin, L"coremin");
-    e(g_volt, L"volt"); e(g_vram, L"vram"); e(g_power, L"power"); c(g_zerorpm, L"zerorpm");
+    e(g_volt, L"volt"); e(g_vram, L"vram"); c(g_memtiming, L"memtiming"); e(g_power, L"power");
+    c(g_zerorpm, L"zerorpm");
     e(g_profile, L"profile"); c(g_trigger, L"trigger"); e(g_time, L"time");
 }
 
@@ -197,7 +205,7 @@ HWND LabeledEdit(HWND p, const wchar_t* label, int id, int y, int w = FLDW) {
 // ---------------------------------------------------------------------------
 void UpdateSourceState() {
     const bool profile = ComboSel(g_source) == 1;
-    for (HWND h : { g_core, g_coremin, g_volt, g_vram, g_power, g_zerorpm })
+    for (HWND h : { g_core, g_coremin, g_volt, g_vram, g_memtiming, g_power, g_zerorpm })
         EnableWindow(h, !profile);
     EnableWindow(g_profile, profile);
     EnableWindow(g_browse, profile);
@@ -219,6 +227,8 @@ std::wstring BuildPayload(std::wstring& err) {
     };
     add(g_core, L"core"); add(g_coremin, L"coremin"); add(g_volt, L"volt");
     add(g_vram, L"vram"); add(g_power, L"power");
+    const int mt = ComboSel(g_memtiming);  // 0 = leave unchanged, else preset
+    if (mt > 0 && mt <= MEMTIMING_COUNT) tail += L" memtiming=" + std::wstring(MEMTIMING_TOKENS[mt]);
     const int zr = ComboSel(g_zerorpm);   // 0 leave, 1 enable, 2 disable
     if (zr == 1) tail += L" zerorpm=1";
     else if (zr == 2) tail += L" zerorpm=0";
@@ -332,6 +342,12 @@ bool ParseGetOutput(const std::string& raw) {
         else if (key == "volt") SetWindowTextW(g_volt, v.c_str());
         else if (key == "vram") SetWindowTextW(g_vram, v.c_str());
         else if (key == "power") SetWindowTextW(g_power, v.c_str());
+        else if (key == "memtiming") {
+            int idx = 0;  // 0 = "Leave unchanged" if the token is unrecognised
+            for (int i = 1; i <= MEMTIMING_COUNT; ++i)
+                if (v == MEMTIMING_TOKENS[i]) { idx = i; break; }
+            SetCombo(g_memtiming, idx);
+        }
         else if (key == "zerorpm") SetCombo(g_zerorpm, v == L"1" ? 1 : 2);
         else known = false;
         if (known) got = true;
@@ -403,7 +419,7 @@ void BuildUi(HWND w) {
 
     // ---- Group 1: GPU tuning ----
     int gy = HEADER + 8;
-    MkGroup(w, L" GPU tuning ", M, gy, GW, 336);
+    MkGroup(w, L" GPU tuning ", M, gy, GW, 368);
     int y = gy + 24;
     MkLabel(w, L"Source", LBLX, y + 4, FLDX - LBLX - 8);
     g_source = MkCombo(w, IDC_SOURCE, FLDX, y, 300, { L"Manual tuning  (-set)", L"Load profile  (-load)" });
@@ -419,6 +435,12 @@ void BuildUi(HWND w) {
     g_coremin = LabeledEdit(w, L"Core min (MHz)",      IDC_COREMIN, y); y += 30;
     g_volt    = LabeledEdit(w, L"Voltage offset (mV)", IDC_VOLT,    y); y += 30;
     g_vram    = LabeledEdit(w, L"VRAM max (MHz)",      IDC_VRAM,    y); y += 30;
+
+    MkLabel(w, L"VRAM mem timing", LBLX, y + 4, FLDX - LBLX - 8);
+    g_memtiming = MkCombo(w, IDC_MEMTIMING, FLDX, y, 200,
+        { L"Leave unchanged", L"default", L"fast", L"fast2", L"auto", L"level1", L"level2" });
+    y += 32;
+
     g_power   = LabeledEdit(w, L"Power limit (%)",     IDC_POWER,   y); y += 30;
 
     MkLabel(w, L"Zero RPM fan", LBLX, y + 4, FLDX - LBLX - 8);
@@ -430,7 +452,7 @@ void BuildUi(HWND w) {
     g_browse = MkButton(w, IDC_BROWSE, L"Browse...", M + GW - 104, y - 1, 88, 26);
 
     // ---- Apply button ----
-    int by = gy + 336 + 10;
+    int by = gy + 368 + 10;
     MkButton(w, IDC_APPLY, L"Apply now", M, by, 200, 32);
 
     // ---- Group 2: Automation ----
@@ -591,7 +613,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nCmd) {
 
     HWND hwnd = CreateWindowW(wc.lpszClassName, L"RadTune GUI",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 600, 812, nullptr, nullptr, hInst, nullptr);
+        CW_USEDEFAULT, CW_USEDEFAULT, 600, 844, nullptr, nullptr, hInst, nullptr);
     if (!hwnd) return 1;
 
     ShowWindow(hwnd, nCmd);
