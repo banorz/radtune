@@ -15,6 +15,9 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   `GetCurrentGPUMetrics`, as machine-readable `key=value` lines. Only metrics the
   driver reports are emitted. This is where the *real* boost clock comes from,
   since the manual-tuning interface exposes only the offset, not the base clock.
+- **GUI "Live" tab** — a second tab next to "Tuning" with a Refresh button that
+  reads current telemetry on demand (`-monitor`) and shows it formatted. No
+  polling: it complements external monitoring overlays rather than replacing them.
 
 ### Changed
 - **`-list` reports supported memory-timing presets per GPU** (via ADLX
