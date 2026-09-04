@@ -57,20 +57,41 @@ cmake --build . --config Release
 ```bash
 RadTune.exe -list
 ```
+It also prints the **allowed range** for each tunable and the memory-timing
+presets your card actually supports, so you don't have to guess values:
+```
+ [GFX]         Core min: 0 MHz     Core max offset: 0 MHz     Voltage offset: -50 mV
+ [GFX range]   core=[-500 .. 1000] volt=[-200 .. 0]
+ [VRAM]        Max Frequency: 2518 MHz    vram=[2518 .. 3000]
+ [VRAM Timing] Preset: default   Supported: default, fast
+ [Power]       Power Limit: +10%        power=[-30 .. 10]
+```
 
 ### 2. Apply Manual Tuning
 You can combine multiple parameters in a single command.
 ```bash
 # Available parameters:
 # gpu=      (Index of the GPU, default 0)
-# core=     (Max GPU Frequency in MHz)
+# core=     (Max GPU clock OFFSET in MHz - signed, 0 = stock. NOT an absolute clock)
 # coremin=  (Min GPU Frequency in MHz)
-# volt=     (GPU Voltage/Offset in mV)
-# vram=     (Max VRAM Frequency in MHz)
+# volt=     (GPU voltage OFFSET in mV - negative = undervolt)
+# vram=     (Max VRAM Frequency in MHz - absolute, not an offset)
+# memtiming=(VRAM memory timing preset: default|fast|fast2|auto|level1|level2)
 # power=    (Power Limit percentage, e.g. 15 for +15%)
 # zerorpm=  (0 to disable, 1 to enable)
 
-RadTune.exe -set gpu=0 core=2500 coremin=2100 volt=1050 vram=2100 power=15 zerorpm=1
+RadTune.exe -set gpu=0 core=-100 coremin=2100 volt=-50 vram=2600 memtiming=fast power=10 zerorpm=1
+```
+Only the parameters you pass are touched; everything else is left alone.
+Run `-list` first to see the valid range for each one.
+
+### 2b. Live Telemetry
+Reads the *real* current values (the manual tuning above only exposes the
+offset, not the resulting clock). No administrator rights needed.
+```bash
+RadTune.exe -monitor gpu=0
+# gpuclock=227  vramclock=132  temp=53  hotspot=55  fan=961
+# boardpower=22  voltage=715  usage=12  vramused=3316
 ```
 
 ### 3. Load Tuning Profile from XML
@@ -106,14 +127,29 @@ Prefer not to type commands? `RadTuneGUI.exe` is a small native frontend for the
 - It requests administrator rights on launch, so the tuning it triggers has the privileges ADLX needs.
 - **Apply now** runs the tuning immediately; **Create schedule** registers the Task Scheduler entry with the chosen trigger (logon / startup / daily); **Show status** / **Remove schedule** manage it.
 - **Read from GPU** pulls the card's current values into the form (via `RadTune -get`).
+- The **Live** tab has a Refresh button showing current telemetry on demand (via `RadTune -monitor`).
 - The form **remembers your last settings** between runs (stored under `HKCU\Software\RadTune`).
 
 The GUI is a thin wrapper — the CLI remains the engine and is fully usable on its own.
 
-The CLI also exposes a machine-readable query used by the GUI:
+The CLI also exposes machine-readable queries used by the GUI:
 ```bash
-RadTune.exe -get [gpu=N]   # prints current tuning as key=value lines (core=, volt=, power=, ...)
+RadTune.exe -get [gpu=N]       # current tuning as key=value lines (core=, volt=, power=, ...)
+RadTune.exe -monitor [gpu=N]   # live telemetry as key=value lines (gpuclock=, temp=, fan=, ...)
 ```
+
+## Exit Codes
+
+RadTune returns **0 only when the requested work actually succeeded**, so
+scheduled tasks and scripts can detect failures:
+
+| Code | Meaning |
+|------|---------|
+| `0`  | Success (or nothing to do) |
+| `1`  | A setting failed or was rejected, bad argument, GPU index out of range, unreadable profile, unknown verb, or ADLX initialization failure |
+
+If a `-set` reports `[!] N setting(s) failed`, the value was outside the range
+your card accepts — check `RadTune.exe -list`.
 
 ## Why RadTune? (Solving Adrenalin Resets)
 

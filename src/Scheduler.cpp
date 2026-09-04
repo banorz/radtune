@@ -9,6 +9,21 @@
 
 namespace {
 
+// True if this process holds an elevated token. Used to keep the failure
+// message honest: schtasks returns a generic code 1 for very different causes
+// (malformed XML, access denied, ...), so we must not blame elevation blindly.
+bool IsElevated() {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+        return false;
+    TOKEN_ELEVATION elevation{};
+    DWORD size = sizeof(elevation);
+    const bool ok = GetTokenInformation(token, TokenElevation, &elevation,
+                                        sizeof(elevation), &size) != 0;
+    CloseHandle(token);
+    return ok && elevation.TokenIsElevated != 0;
+}
+
 std::string XmlEscape(const std::string& in) {
     std::string out;
     out.reserve(in.size());
@@ -184,8 +199,14 @@ bool Install(const std::string& trigger, const std::vector<std::string>& payload
     std::remove(xmlPath.c_str());
 
     if (rc != 0) {
-        error = "schtasks failed (code " + std::to_string(rc) + "). Creating a task with highest "
-                "privileges usually requires running RadTune from an elevated (Administrator) console.";
+        // schtasks prints the real reason (bad XML, access denied, ...) to our
+        // stdout/stderr; point at it instead of guessing. Only mention elevation
+        // when we actually lack it - blaming it unconditionally sent users
+        // chasing an Administrator console while the true cause was elsewhere.
+        error = "schtasks failed (code " + std::to_string(rc) + "). See the schtasks error above.";
+        if (!IsElevated())
+            error += " Note: creating a task with highest privileges requires running RadTune "
+                     "from an elevated (Administrator) console.";
         return false;
     }
     return true;

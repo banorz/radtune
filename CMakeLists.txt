@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
-project(RadTune)
+
+# Single source of truth for the version. Passed to the code as RADTUNE_VERSION
+# so the banner and --usage text can never drift from the released tag again.
+project(RadTune VERSION 1.3.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -25,6 +28,8 @@ set(HEADERS
 )
 
 add_executable(RadTune ${SOURCES} ${HEADERS})
+
+target_compile_definitions(RadTune PRIVATE RADTUNE_VERSION="${PROJECT_VERSION}")
 
 # Include directories
 target_include_directories(RadTune PRIVATE 

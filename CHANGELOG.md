@@ -3,6 +3,71 @@
 All notable changes to RadTune are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-09-04
+
+Tuning correctness & visibility release. RadTune gains VRAM memory timing
+control and live telemetry, stops silently swallowing failures, and shows the
+valid range for every tunable so values no longer have to be guessed.
+
+### Added
+- **VRAM memory timing control (`memtiming=`)** — set Adrenalin's "Memory Timing
+  Control" preset (`default` / `fast` / `fast2` / `auto` / `level1` / `level2`)
+  via `-set`, read it back with `-get` and `-list`, and pick it from the GUI's
+  "VRAM mem timing" dropdown. Gated per-GPU by ADLX `IsSupportedMemoryTiming`.
+- **`-monitor` verb** — live GPU telemetry (real clock, VRAM clock, temperature,
+  hotspot, fan RPM, power, voltage, usage, VRAM used) via ADLX
+  `GetCurrentGPUMetrics`, as machine-readable `key=value` lines. Only metrics the
+  driver reports are emitted. This is where the *real* boost clock comes from,
+  since the manual-tuning interface exposes only the offset, not the base clock.
+- **GUI "Live" tab** — a second tab next to "Tuning" with a Refresh button that
+  reads current telemetry on demand (`-monitor`) and shows it formatted. No
+  polling: it complements external monitoring overlays rather than replacing them.
+
+- **`-list` shows the allowed range for each tunable** (`core`, `volt`, `vram`,
+  `power`), read from ADLX. The core max is an offset, so its span was not
+  guessable — on an RX 9070 XT it reads `core=[-500 .. 1000]`,
+  `volt=[-200 .. 0]`, `vram=[2518 .. 3000]`, `power=[-30 .. 10]`.
+
+### Changed
+- **Meaningful exit codes.** RadTune now exits non-zero when the requested work
+  did not succeed: a failed or rejected setting, an out-of-range GPU index, an
+  unreadable profile, a bad argument, or an unknown verb. Previously every run
+  returned 0 — a scheduled task could report success while applying nothing.
+- **Out-of-range values are rejected instead of silently ignored.** ADLX accepts
+  an impossible value (e.g. `core=99999`), returns `ADLX_OK` and changes nothing,
+  so RadTune used to report it as applied. Each value is now validated against
+  the card's advertised range first: `[!] Core max offset 99999 MHz is out of
+  range [-500 .. 1000] for this GPU.` and a non-zero exit.
+- **Honest apply summary.** The final line reports what actually happened
+  ("applied N", "N failed", or "nothing to apply") instead of unconditionally
+  printing "Successfully applied!" even when every setting had been rejected.
+- **Every `Set*` result is checked.** Core max/min, VRAM frequency and Zero RPM
+  previously ignored the ADLX return value and were reported as successful even
+  when the driver rejected them.
+- **`-list` reports supported memory-timing presets per GPU** (via ADLX
+  `GetSupportedMemoryTimingDescriptionList`), and `-set` now rejects a preset the
+  card doesn't expose with a clear "Supported: …" message instead of a raw ADLX
+  error. The `memtiming=` names are ADLX enum values (a superset); a given card
+  exposes only a subset (e.g. Adrenalin's Standard/Accelerated).
+- **Clearer `-list` / GUI labels**: the GPU max clock is an offset, now shown as
+  "Core max offset" (CLI) and "Core max offset (MHz)" (GUI); voltage is likewise
+  labelled "Voltage offset".
+
+### Fixed
+- **`-schedule` no longer blames elevation for every failure.** `schtasks`
+  returns a generic code 1 for very different causes, and the message
+  unconditionally told users to run as Administrator — which sent them chasing
+  an elevated console while the real cause (a malformed task XML) was printed
+  right above. The message now points at the schtasks error and only mentions
+  elevation when the process actually lacks it.
+- **Negative core/voltage offsets are now applied.** Tuning params moved from
+  magic sentinels to `std::optional`, so a valid `core=-500` (RDNA4 offset) is no
+  longer indistinguishable from "unset" and silently dropped.
+- **Access violation on exit.** ADLX interfaces are now released before
+  `g_ADLX.Terminate()`; releasing them afterwards dereferenced freed vtables and
+  crashed the process on teardown (non-zero exit code, harmless but ugly for
+  scripts and the scheduler).
+
 ## [1.2.0] - 2026-07-01
 
 Automation & GUI release. RadTune can now schedule itself and ships an optional
