@@ -30,6 +30,12 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   labelled "Voltage offset".
 
 ### Fixed
+- **`-schedule` no longer blames elevation for every failure.** `schtasks`
+  returns a generic code 1 for very different causes, and the message
+  unconditionally told users to run as Administrator — which sent them chasing
+  an elevated console while the real cause (a malformed task XML) was printed
+  right above. The message now points at the schtasks error and only mentions
+  elevation when the process actually lacks it.
 - **Negative core/voltage offsets are now applied.** Tuning params moved from
   magic sentinels to `std::optional`, so a valid `core=-500` (RDNA4 offset) is no
   longer indistinguishable from "unset" and silently dropped.
