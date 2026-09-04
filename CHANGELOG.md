@@ -3,7 +3,11 @@
 All notable changes to RadTune are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.3.0] - 2026-09-04
+
+Tuning correctness & visibility release. RadTune gains VRAM memory timing
+control and live telemetry, stops silently swallowing failures, and shows the
+valid range for every tunable so values no longer have to be guessed.
 
 ### Added
 - **VRAM memory timing control (`memtiming=`)** — set Adrenalin's "Memory Timing
@@ -19,7 +23,22 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   reads current telemetry on demand (`-monitor`) and shows it formatted. No
   polling: it complements external monitoring overlays rather than replacing them.
 
+- **`-list` shows the allowed range for each tunable** (`core`, `volt`, `vram`,
+  `power`), read from ADLX. The core max is an offset, so its span was not
+  guessable — on an RX 9070 XT it reads `core=[-500 .. 1000]`,
+  `volt=[-200 .. 0]`, `vram=[2518 .. 3000]`, `power=[-30 .. 10]`.
+
 ### Changed
+- **Meaningful exit codes.** RadTune now exits non-zero when the requested work
+  did not succeed: a failed or rejected setting, an out-of-range GPU index, an
+  unreadable profile, a bad argument, or an unknown verb. Previously every run
+  returned 0 — a scheduled task could report success while applying nothing.
+- **Honest apply summary.** The final line reports what actually happened
+  ("applied N", "N failed", or "nothing to apply") instead of unconditionally
+  printing "Successfully applied!" even when every setting had been rejected.
+- **Every `Set*` result is checked.** Core max/min, VRAM frequency and Zero RPM
+  previously ignored the ADLX return value and were reported as successful even
+  when the driver rejected them.
 - **`-list` reports supported memory-timing presets per GPU** (via ADLX
   `GetSupportedMemoryTimingDescriptionList`), and `-set` now rejects a preset the
   card doesn't expose with a clear "Supported: …" message instead of a raw ADLX

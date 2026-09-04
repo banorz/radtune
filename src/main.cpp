@@ -11,6 +11,12 @@
 #include <iomanip>
 #include <optional>
 
+// Single source of truth is CMakeLists (project VERSION -> compile definition).
+// The fallback keeps non-CMake builds compiling.
+#ifndef RADTUNE_VERSION
+#define RADTUNE_VERSION "dev"
+#endif
+
 using namespace adlx;
 
 // Helper to print results
@@ -74,6 +80,39 @@ std::string JoinMemTimingNames(const std::vector<ADLX_MEMORYTIMING_DESCRIPTION>&
         s += MemTimingName(v[i]);
     }
     return s;
+}
+
+// Outcome of an apply pass. `failed` drives the process exit code: RadTune's
+// whole point is unattended re-application from a scheduled task, and a run that
+// silently reports success while applying nothing is worse than a loud failure.
+struct ApplyResult {
+    int applied = 0;
+    int failed  = 0;
+};
+
+// Reports one setting's outcome and tallies it. Every Set* call goes through
+// this, so a driver rejection can no longer be mistaken for success.
+void Report(ApplyResult& r, ADLX_RESULT res, const std::string& what, const std::string& value) {
+    if (ADLX_SUCCEEDED(res)) {
+        std::cout << " -> " << what << ": " << value << std::endl;
+        ++r.applied;
+    } else {
+        std::cerr << " [!] Failed to set " << what << ": " << value
+                  << " (Error: " << res << ")" << std::endl;
+        ++r.failed;
+    }
+}
+
+// Reports a setting rejected before we even called ADLX (unsupported feature or
+// preset). Counts as a failure so the exit code reflects it.
+void ReportRejected(ApplyResult& r, const std::string& message) {
+    std::cerr << " [!] " << message << std::endl;
+    ++r.failed;
+}
+
+// Formats an ADLX_IntRange for the -list output, e.g. "[-200 .. 200]".
+std::string RangeText(const ADLX_IntRange& r) {
+    return "[" + std::to_string(r.minValue) + " .. " + std::to_string(r.maxValue) + "]";
 }
 
 #include "ProfileParser.h"
@@ -160,6 +199,21 @@ void ShowGPUSettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices) 
                       << "Core min: " << std::setw(10) << (std::to_string(minFreq) + " MHz")
                       << "Core max offset: " << std::setw(10) << (std::to_string(maxFreq) + " MHz")
                       << "Voltage offset: " << (std::to_string(voltage) + " mV") << std::endl;
+
+            // Allowed ranges, so the user doesn't have to discover the card's
+            // limits by trial and error - especially since the core max is an
+            // offset and its span is not guessable.
+            ADLX_IntRange rMin{}, rMax{}, rVolt{};
+            const bool okMin  = ADLX_SUCCEEDED(gfx2->GetGPUMinFrequencyRange(&rMin));
+            const bool okMax  = ADLX_SUCCEEDED(gfx2->GetGPUMaxFrequencyRange(&rMax));
+            const bool okVolt = ADLX_SUCCEEDED(gfx2->GetGPUVoltageRange(&rVolt));
+            if (okMin || okMax || okVolt) {
+                std::cout << std::left << std::setw(15) << " [GFX range]";
+                if (okMin)  std::cout << "coremin=" << std::setw(15) << RangeText(rMin);
+                if (okMax)  std::cout << "core=" << std::setw(15) << RangeText(rMax);
+                if (okVolt) std::cout << "volt=" << RangeText(rVolt);
+                std::cout << std::endl;
+            }
         } else {
             IADLXManualGraphicsTuning1Ptr gfx1(manualGFXIfc);
             if (gfx1) {
@@ -183,7 +237,11 @@ void ShowGPUSettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices) 
             adlx_int maxFreq;
             vram2->GetMaxVRAMFrequency(&maxFreq);
             std::cout << std::left << std::setw(15) << " [VRAM]"
-                      << "Max Frequency: " << maxFreq << " MHz" << std::endl;
+                      << "Max Frequency: " << std::setw(12) << (std::to_string(maxFreq) + " MHz");
+            ADLX_IntRange rVram{};
+            if (ADLX_SUCCEEDED(vram2->GetMaxVRAMFrequencyRange(&rVram)))
+                std::cout << "vram=" << RangeText(rVram);
+            std::cout << std::endl;
         } else {
              std::cout << " [VRAM] Status: Manual VRAM Tuning 1 supported." << std::endl;
         }
@@ -234,8 +292,13 @@ void ShowGPUSettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices) 
         IADLXManualPowerTuningPtr power(powerIfc);
         adlx_int powerLimit;
         power->GetPowerLimit(&powerLimit);
-        std::cout << std::left << std::setw(15) << " [Power]" 
-                  << "Power Limit: " << (powerLimit >= 0 ? "+" : "") << powerLimit << "%" << std::endl;
+        std::cout << std::left << std::setw(15) << " [Power]"
+                  << "Power Limit: " << std::setw(12)
+                  << ((powerLimit >= 0 ? "+" : "") + std::to_string(powerLimit) + "%");
+        ADLX_IntRange rPower{};
+        if (ADLX_SUCCEEDED(power->GetPowerLimitRange(&rPower)))
+            std::cout << "power=" << RangeText(rPower);
+        std::cout << std::endl;
     }
     std::cout << "--------------------------------------------------------" << std::endl;
 }
@@ -245,41 +308,41 @@ void ShowGPUSettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices) 
 // not ask to change this, leave it alone", a present one means "apply exactly
 // this value". This separates "was it requested" from "what is the value", so
 // every number is legal - including negative core/voltage offsets (RDNA4) and 0.
-void ApplySettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices,
-                   std::optional<int> coreMaxFreq, std::optional<int> coreMinFreq,
-                   std::optional<int> voltage, std::optional<int> vramFreq,
-                   std::optional<int> memTiming, std::optional<int> powerLimit,
-                   std::optional<int> zeroRPM) {
+ApplyResult ApplySettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices,
+                          std::optional<int> coreMaxFreq, std::optional<int> coreMinFreq,
+                          std::optional<int> voltage, std::optional<int> vramFreq,
+                          std::optional<int> memTiming, std::optional<int> powerLimit,
+                          std::optional<int> zeroRPM) {
+    ApplyResult r;
     IADLXInterfacePtr ifc;
     std::cout << "\n\033[1;33m[*] Applying Settings...\033[0m" << std::endl;
 
     tuningServices->GetManualGFXTuning(gpu, &ifc);
     IADLXManualGraphicsTuning2Ptr gfx2(ifc);
     if (gfx2) {
-        if (coreMaxFreq) {
-            gfx2->SetGPUMaxFrequency(*coreMaxFreq);
-            std::cout << " -> GFX Max Frequency: " << *coreMaxFreq << " MHz" << std::endl;
-        }
-        if (coreMinFreq) {
-            gfx2->SetGPUMinFrequency(*coreMinFreq);
-            std::cout << " -> GFX Min Frequency: " << *coreMinFreq << " MHz" << std::endl;
-        }
-        if (voltage) {
-            ADLX_RESULT res = gfx2->SetGPUVoltage(*voltage);
-            if (ADLX_SUCCEEDED(res))
-                std::cout << " -> GFX Voltage (Offset): " << *voltage << " mV" << std::endl;
-            else
-                std::cerr << " [!] Failed to set Voltage: " << *voltage << " (Error: " << res << ")" << std::endl;
-        }
+        if (coreMaxFreq)
+            Report(r, gfx2->SetGPUMaxFrequency(*coreMaxFreq),
+                   "Core max offset", std::to_string(*coreMaxFreq) + " MHz");
+        if (coreMinFreq)
+            Report(r, gfx2->SetGPUMinFrequency(*coreMinFreq),
+                   "Core min", std::to_string(*coreMinFreq) + " MHz");
+        if (voltage)
+            Report(r, gfx2->SetGPUVoltage(*voltage),
+                   "Voltage offset", std::to_string(*voltage) + " mV");
+    } else if (coreMaxFreq || coreMinFreq || voltage) {
+        ReportRejected(r, "Manual graphics tuning is not available on this GPU.");
     }
 
     if (vramFreq || memTiming) {
         tuningServices->GetManualVRAMTuning(gpu, &ifc);
         IADLXManualVRAMTuning2Ptr vram2(ifc);
         IADLXManualVRAMTuning1Ptr vram1(ifc);
-        if (vram2 && vramFreq) {
-            vram2->SetMaxVRAMFrequency(*vramFreq);
-            std::cout << " -> VRAM Max Frequency: " << *vramFreq << " MHz" << std::endl;
+        if (vramFreq) {
+            if (vram2)
+                Report(r, vram2->SetMaxVRAMFrequency(*vramFreq),
+                       "VRAM max frequency", std::to_string(*vramFreq) + " MHz");
+            else
+                ReportRejected(r, "Manual VRAM frequency tuning is not available on this GPU.");
         }
         if (memTiming) {
             const ADLX_MEMORYTIMING_DESCRIPTION mt = (ADLX_MEMORYTIMING_DESCRIPTION)*memTiming;
@@ -288,7 +351,7 @@ void ApplySettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices,
             else if (vram1) vram1->IsSupportedMemoryTiming(&mtSupported);
 
             if (!mtSupported) {
-                std::cerr << " [!] Memory timing control not supported on this GPU." << std::endl;
+                ReportRejected(r, "Memory timing control not supported on this GPU.");
             } else {
                 // The ADLX enum is a superset across architectures; reject a
                 // preset this card doesn't expose with a clear, listed message
@@ -298,19 +361,14 @@ void ApplySettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices,
                 bool allowed = !haveList;  // list unavailable -> let ADLX decide
                 for (auto d : presets) if (d == mt) allowed = true;
 
-                if (!allowed) {
-                    std::cerr << " [!] Memory timing '" << MemTimingName(mt)
-                              << "' not supported on this GPU. Supported: "
-                              << JoinMemTimingNames(presets) << std::endl;
-                } else {
-                    ADLX_RESULT res = vram2 ? vram2->SetMemoryTimingDescription(mt)
-                                            : vram1->SetMemoryTimingDescription(mt);
-                    if (ADLX_SUCCEEDED(res))
-                        std::cout << " -> VRAM Memory Timing: " << MemTimingName(mt) << std::endl;
-                    else
-                        std::cerr << " [!] Failed to set Memory Timing: " << MemTimingName(mt)
-                                  << " (Error: " << res << ")" << std::endl;
-                }
+                if (!allowed)
+                    ReportRejected(r, "Memory timing '" + std::string(MemTimingName(mt)) +
+                                      "' not supported on this GPU. Supported: " +
+                                      JoinMemTimingNames(presets));
+                else
+                    Report(r, vram2 ? vram2->SetMemoryTimingDescription(mt)
+                                    : vram1->SetMemoryTimingDescription(mt),
+                           "VRAM memory timing", MemTimingName(mt));
             }
         }
     }
@@ -318,31 +376,43 @@ void ApplySettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices,
     if (powerLimit) {
         tuningServices->GetManualPowerTuning(gpu, &ifc);
         IADLXManualPowerTuningPtr power(ifc);
-        if (power) {
-            ADLX_RESULT res = power->SetPowerLimit(*powerLimit);
-            if (ADLX_SUCCEEDED(res))
-                std::cout << " -> Power Limit: " << (*powerLimit >= 0 ? "+" : "") << *powerLimit << "%" << std::endl;
-            else
-                std::cerr << " [!] Failed to set Power Limit: " << *powerLimit << " (Error: " << res << ")" << std::endl;
-        }
+        if (power)
+            Report(r, power->SetPowerLimit(*powerLimit), "Power limit",
+                   (*powerLimit >= 0 ? "+" : "") + std::to_string(*powerLimit) + "%");
+        else
+            ReportRejected(r, "Manual power tuning is not available on this GPU.");
     }
 
     if (zeroRPM) {
         tuningServices->GetManualFanTuning(gpu, &ifc);
         IADLXManualFanTuningPtr fan(ifc);
-        if (fan) {
-            fan->SetZeroRPMState(*zeroRPM == 1);
-            std::cout << " -> Zero RPM: " << (*zeroRPM == 1 ? "ON" : "OFF") << std::endl;
-        }
+        if (fan)
+            Report(r, fan->SetZeroRPMState(*zeroRPM == 1), "Zero RPM",
+                   *zeroRPM == 1 ? "ON" : "OFF");
+        else
+            ReportRejected(r, "Manual fan tuning is not available on this GPU.");
     }
-    std::cout << "\033[1;32m[+] Successfully applied!\033[0m" << std::endl;
+
+    // Say what actually happened. The old code printed "Successfully applied!"
+    // unconditionally, even when every requested setting had been rejected.
+    if (r.failed > 0)
+        std::cerr << "\033[1;31m[!] " << r.failed << " setting(s) failed, "
+                  << r.applied << " applied.\033[0m" << std::endl;
+    else if (r.applied > 0)
+        std::cout << "\033[1;32m[+] Successfully applied " << r.applied
+                  << " setting(s).\033[0m" << std::endl;
+    else
+        std::cout << "\033[1;33m[i] Nothing to apply (no tuning values given).\033[0m" << std::endl;
+    return r;
 }
 
-void LoadProfileOnGpu(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices, const std::string& path) {
+ApplyResult LoadProfileOnGpu(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices, const std::string& path) {
     GPUProfile profile;
     if (!ProfileParser::Parse(path, profile)) {
         std::cerr << "[!] Error parsing XML profile: " << path << std::endl;
-        return;
+        ApplyResult r;
+        r.failed = 1;   // a profile we cannot read is a failed run, not a no-op
+        return r;
     }
 
     std::cout << "\033[1;33m[*] Loading Clean Profile (Custom Mapping): \033[0m" << path << std::endl;
@@ -359,8 +429,8 @@ void LoadProfileOnGpu(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices,
         std::cout << " -> Found ID 3 (Power Limit): " << *power << std::endl;
     }
 
-    ApplySettings(gpu, tuningServices, std::nullopt, std::nullopt, voltage,
-                  std::nullopt, std::nullopt, power, std::nullopt);
+    return ApplySettings(gpu, tuningServices, std::nullopt, std::nullopt, voltage,
+                         std::nullopt, std::nullopt, power, std::nullopt);
 }
 
 
@@ -463,7 +533,8 @@ int main(int argc, char* argv[]) {
     std::cout << "\033[1;31m" << " |  _ \\ __ _  __| |_   _|   _ _ __   ___ " << "\033[0m" << std::endl;
     std::cout << "\033[1;31m" << " | |_) / _` |/ _` | | || | | | '_ \\ / _ \\" << "\033[0m" << std::endl;
     std::cout << "\033[1;31m" << " |  _ < (_| | (_| | | || |_| | | | |  __/" << "\033[0m" << std::endl;
-    std::cout << "\033[1;31m" << " |_| \\_\\__,_|\\__,_| |_| \\__,_|_| |_|\\___|" << "\033[0m" << " v1.2.0 (ADLX)" << std::endl;
+    std::cout << "\033[1;31m" << " |_| \\_\\__,_|\\__,_| |_| \\__,_|_| |_|\\___|" << "\033[0m"
+              << " v" << RADTUNE_VERSION << " (ADLX)" << std::endl;
 
     // Task Scheduler management does not need the GPU/ADLX; handle it first.
     int scheduleExit = 0;
@@ -483,6 +554,11 @@ int main(int argc, char* argv[]) {
     IADLXGPUListPtr gpus;
     systemServices->GetGPUs(&gpus);
 
+    // Exit code contract: 0 only when the requested work actually succeeded.
+    // Unattended runs (Task Scheduler) are the main consumer, and nobody is
+    // watching the console - so failures must be visible to the caller.
+    int exitCode = 0;
+
     if (argc > 1) {
         std::string cmd = argv[1];
         if (cmd == "-list") {
@@ -501,6 +577,9 @@ int main(int argc, char* argv[]) {
                 IADLXGPUPtr gpu;
                 gpus->At(targetGpu, &gpu);
                 PrintGpuValues(gpu, tuningServices);
+            } else {
+                std::cerr << "[!] GPU index " << targetGpu << " out of range." << std::endl;
+                exitCode = 1;
             }
         } else if (cmd == "-monitor") {
             int targetGpu = 0;
@@ -513,10 +592,14 @@ int main(int argc, char* argv[]) {
             IADLXPerformanceMonitoringServicesPtr perf;
             if (ADLX_FAILED(systemServices->GetPerformanceMonitoringServices(&perf)) || !perf) {
                 std::cerr << "[!] Performance monitoring not available." << std::endl;
+                exitCode = 1;
             } else if (targetGpu < (int)gpus->Size()) {
                 IADLXGPUPtr gpu;
                 gpus->At(targetGpu, &gpu);
                 PrintGpuMetrics(gpu, perf);
+            } else {
+                std::cerr << "[!] GPU index " << targetGpu << " out of range." << std::endl;
+                exitCode = 1;
             }
         } else if (cmd == "-load" && argc > 2) {
             std::string path = argv[2];
@@ -526,10 +609,13 @@ int main(int argc, char* argv[]) {
                  if (gpuArg.find("gpu=") == 0) targetGpu = std::stoi(gpuArg.substr(4));
             }
 
-            if (targetGpu < gpus->Size()) {
+            if (targetGpu < (int)gpus->Size()) {
                 IADLXGPUPtr gpu;
                 gpus->At(targetGpu, &gpu);
-                LoadProfileOnGpu(gpu, tuningServices, path);
+                if (LoadProfileOnGpu(gpu, tuningServices, path).failed > 0) exitCode = 1;
+            } else {
+                std::cerr << "[!] GPU index " << targetGpu << " out of range." << std::endl;
+                exitCode = 1;
             }
         } else if (cmd == "-set" && argc > 2) {
             int targetGpu = 0;
@@ -545,20 +631,27 @@ int main(int argc, char* argv[]) {
                 else if (arg.find("vram=") == 0) vramFreq = std::stoi(arg.substr(5));
                 else if (arg.find("memtiming=") == 0) {
                     const int mt = ParseMemTiming(arg.substr(10));
-                    if (mt >= 0) memTiming = mt;
-                    else std::cerr << " [!] Unknown memtiming value: " << arg.substr(10)
-                                   << " (use default|fast|fast2|auto|level1|level2)" << std::endl;
+                    if (mt >= 0) {
+                        memTiming = mt;
+                    } else {
+                        std::cerr << " [!] Unknown memtiming value: " << arg.substr(10)
+                                  << " (use default|fast|fast2|auto|level1|level2)" << std::endl;
+                        exitCode = 1;   // a bad argument is a failed run
+                    }
                 }
                 else if (arg.find("power=") == 0) powerLimit = std::stoi(arg.substr(6));
                 else if (arg.find("zerorpm=") == 0) zeroRPM = std::stoi(arg.substr(8));
             }
 
-            if (targetGpu < gpus->Size()) {
+            if (targetGpu < (int)gpus->Size()) {
                 IADLXGPUPtr gpu;
                 gpus->At(targetGpu, &gpu);
-                ApplySettings(gpu, tuningServices, coreMaxFreq, coreMinFreq, voltage, vramFreq, memTiming, powerLimit, zeroRPM);
+                if (ApplySettings(gpu, tuningServices, coreMaxFreq, coreMinFreq, voltage,
+                                  vramFreq, memTiming, powerLimit, zeroRPM).failed > 0)
+                    exitCode = 1;
             } else {
-                std::cerr << "Error: GPU index " << targetGpu << " out of range." << std::endl;
+                std::cerr << "[!] GPU index " << targetGpu << " out of range." << std::endl;
+                exitCode = 1;
             }
 
         } else {
@@ -570,10 +663,11 @@ int main(int argc, char* argv[]) {
             std::cout << "  RadTune -load profile.xml [gpu=N]" << std::endl;
             std::cout << "  RadTune -schedule <logon|startup|daily=HH:MM> <-set ...|-load ...>" << std::endl;
             std::cout << "  RadTune -schedule status | remove" << std::endl;
+            exitCode = 1;   // unknown verb
         }
     } else {
-        std::cout << "RadTune v1.2.0 (ADLX based)" << std::endl;
-        std::cout << "Usage: RadTune [-list | -set ... | -load ...]" << std::endl;
+        std::cout << "RadTune v" << RADTUNE_VERSION << " (ADLX based)" << std::endl;
+        std::cout << "Usage: RadTune [-list | -get | -monitor | -set ... | -load ...]" << std::endl;
     }
 
     // ADLX invalidates every outstanding interface when Terminate() runs;
@@ -585,5 +679,5 @@ int main(int argc, char* argv[]) {
     gpus = nullptr;
 
     g_ADLX.Terminate();
-    return 0;
+    return exitCode;
 }
