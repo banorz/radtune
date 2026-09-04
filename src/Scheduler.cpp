@@ -83,9 +83,13 @@ bool BuildTriggerXml(const std::string& trigger, std::string& triggerXml, std::s
     return false;
 }
 
+// Do not declare a byte encoding here. schtasks reads the task file into a
+// Unicode string before passing it to the XML parser; declaring UTF-8 at that
+// point makes MSXML try (and fail) to switch encodings. Microsoft's schtasks
+// XML examples likewise use a declaration without an encoding attribute.
 std::string BuildTaskXml(const std::string& triggerXml, const std::string& exePath, const std::string& args) {
     std::ostringstream xml;
-    xml << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+    xml << "<?xml version=\"1.0\"?>\n"
         << "<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n"
         << "  <RegistrationInfo>\n"
         << "    <Description>Re-applies AMD GPU tuning automatically (RadTune)</Description>\n"
