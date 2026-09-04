@@ -33,6 +33,11 @@ valid range for every tunable so values no longer have to be guessed.
   did not succeed: a failed or rejected setting, an out-of-range GPU index, an
   unreadable profile, a bad argument, or an unknown verb. Previously every run
   returned 0 — a scheduled task could report success while applying nothing.
+- **Out-of-range values are rejected instead of silently ignored.** ADLX accepts
+  an impossible value (e.g. `core=99999`), returns `ADLX_OK` and changes nothing,
+  so RadTune used to report it as applied. Each value is now validated against
+  the card's advertised range first: `[!] Core max offset 99999 MHz is out of
+  range [-500 .. 1000] for this GPU.` and a non-zero exit.
 - **Honest apply summary.** The final line reports what actually happened
   ("applied N", "N failed", or "nothing to apply") instead of unconditionally
   printing "Successfully applied!" even when every setting had been rejected.

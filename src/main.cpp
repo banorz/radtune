@@ -115,6 +115,20 @@ std::string RangeText(const ADLX_IntRange& r) {
     return "[" + std::to_string(r.minValue) + " .. " + std::to_string(r.maxValue) + "]";
 }
 
+// Checks a requested value against the card's advertised range BEFORE calling
+// ADLX. This is not belt-and-braces: ADLX silently ignores an out-of-range
+// value and still returns ADLX_OK, so without this check "core=99999" would be
+// reported as applied (and exit 0) while the GPU kept its old setting.
+// If the range itself can't be read, we let ADLX decide rather than block.
+bool InRange(ApplyResult& r, ADLX_RESULT rangeRes, const ADLX_IntRange& range,
+             int value, const std::string& what, const std::string& unit) {
+    if (ADLX_FAILED(rangeRes)) return true;
+    if (value >= range.minValue && value <= range.maxValue) return true;
+    ReportRejected(r, what + " " + std::to_string(value) + unit + " is out of range "
+                      + RangeText(range) + " for this GPU.");
+    return false;
+}
+
 #include "ProfileParser.h"
 #include "Scheduler.h"
 
@@ -320,13 +334,17 @@ ApplyResult ApplySettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServi
     tuningServices->GetManualGFXTuning(gpu, &ifc);
     IADLXManualGraphicsTuning2Ptr gfx2(ifc);
     if (gfx2) {
-        if (coreMaxFreq)
+        ADLX_IntRange rg{};
+        if (coreMaxFreq && InRange(r, gfx2->GetGPUMaxFrequencyRange(&rg), rg,
+                                   *coreMaxFreq, "Core max offset", " MHz"))
             Report(r, gfx2->SetGPUMaxFrequency(*coreMaxFreq),
                    "Core max offset", std::to_string(*coreMaxFreq) + " MHz");
-        if (coreMinFreq)
+        if (coreMinFreq && InRange(r, gfx2->GetGPUMinFrequencyRange(&rg), rg,
+                                   *coreMinFreq, "Core min", " MHz"))
             Report(r, gfx2->SetGPUMinFrequency(*coreMinFreq),
                    "Core min", std::to_string(*coreMinFreq) + " MHz");
-        if (voltage)
+        if (voltage && InRange(r, gfx2->GetGPUVoltageRange(&rg), rg,
+                               *voltage, "Voltage offset", " mV"))
             Report(r, gfx2->SetGPUVoltage(*voltage),
                    "Voltage offset", std::to_string(*voltage) + " mV");
     } else if (coreMaxFreq || coreMinFreq || voltage) {
@@ -338,11 +356,15 @@ ApplyResult ApplySettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServi
         IADLXManualVRAMTuning2Ptr vram2(ifc);
         IADLXManualVRAMTuning1Ptr vram1(ifc);
         if (vramFreq) {
-            if (vram2)
-                Report(r, vram2->SetMaxVRAMFrequency(*vramFreq),
-                       "VRAM max frequency", std::to_string(*vramFreq) + " MHz");
-            else
+            if (!vram2) {
                 ReportRejected(r, "Manual VRAM frequency tuning is not available on this GPU.");
+            } else {
+                ADLX_IntRange rv{};
+                if (InRange(r, vram2->GetMaxVRAMFrequencyRange(&rv), rv,
+                            *vramFreq, "VRAM max frequency", " MHz"))
+                    Report(r, vram2->SetMaxVRAMFrequency(*vramFreq),
+                           "VRAM max frequency", std::to_string(*vramFreq) + " MHz");
+            }
         }
         if (memTiming) {
             const ADLX_MEMORYTIMING_DESCRIPTION mt = (ADLX_MEMORYTIMING_DESCRIPTION)*memTiming;
@@ -376,11 +398,14 @@ ApplyResult ApplySettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServi
     if (powerLimit) {
         tuningServices->GetManualPowerTuning(gpu, &ifc);
         IADLXManualPowerTuningPtr power(ifc);
-        if (power)
-            Report(r, power->SetPowerLimit(*powerLimit), "Power limit",
-                   (*powerLimit >= 0 ? "+" : "") + std::to_string(*powerLimit) + "%");
-        else
+        if (!power) {
             ReportRejected(r, "Manual power tuning is not available on this GPU.");
+        } else {
+            ADLX_IntRange rp{};
+            if (InRange(r, power->GetPowerLimitRange(&rp), rp, *powerLimit, "Power limit", "%"))
+                Report(r, power->SetPowerLimit(*powerLimit), "Power limit",
+                       (*powerLimit >= 0 ? "+" : "") + std::to_string(*powerLimit) + "%");
+        }
     }
 
     if (zeroRPM) {
