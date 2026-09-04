@@ -10,6 +10,10 @@
 #include <string>
 #include <iomanip>
 #include <optional>
+#include <thread>
+#include <chrono>
+#include <io.h>
+#include <cstdio>
 
 // Single source of truth is CMakeLists (project VERSION -> compile definition).
 // The fallback keeps non-CMake builds compiling.
@@ -72,11 +76,13 @@ bool GetSupportedMemTimings(IADLXManualVRAMTuning2Ptr vram2, IADLXManualVRAMTuni
     return true;
 }
 
-// Comma-joins preset names, e.g. "default, fast".
-std::string JoinMemTimingNames(const std::vector<ADLX_MEMORYTIMING_DESCRIPTION>& v) {
+// Joins preset names. Default separator reads well for humans ("default, fast");
+// machine-readable output passes "," so the consumer doesn't have to trim.
+std::string JoinMemTimingNames(const std::vector<ADLX_MEMORYTIMING_DESCRIPTION>& v,
+                               const char* sep = ", ") {
     std::string s;
     for (size_t i = 0; i < v.size(); ++i) {
-        if (i) s += ", ";
+        if (i) s += sep;
         s += MemTimingName(v[i]);
     }
     return s;
@@ -498,8 +504,16 @@ void PrintGpuValues(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices) {
             vram1->IsSupportedMemoryTiming(&mtSupported);
             if (mtSupported) mtRes = vram1->GetMemoryTimingDescription(&mt);
         }
-        if (mtSupported && ADLX_SUCCEEDED(mtRes))
+        if (mtSupported && ADLX_SUCCEEDED(mtRes)) {
             std::cout << "memtiming=" << MemTimingName(mt) << "\n";
+            // The GUI builds its dropdown from this: the ADLX enum is a superset
+            // across architectures, so offering all of it would let the user pick
+            // a preset this card will refuse.
+            std::vector<ADLX_MEMORYTIMING_DESCRIPTION> presets;
+            GetSupportedMemTimings(vram2, vram1, presets);
+            if (!presets.empty())
+                std::cout << "memtimingsupported=" << JoinMemTimingNames(presets, ",") << "\n";
+        }
     }
 
     tuningServices->GetManualPowerTuning(gpu, &ifc);
@@ -553,13 +567,17 @@ void PrintGpuMetrics(IADLXGPUPtr gpu, IADLXPerformanceMonitoringServicesPtr perf
 }
 
 int main(int argc, char* argv[]) {
-    // Print Banner
-    std::cout << "\033[1;31m" << "  ____           _ _____                 " << "\033[0m" << std::endl;
-    std::cout << "\033[1;31m" << " |  _ \\ __ _  __| |_   _|   _ _ __   ___ " << "\033[0m" << std::endl;
-    std::cout << "\033[1;31m" << " | |_) / _` |/ _` | | || | | | '_ \\ / _ \\" << "\033[0m" << std::endl;
-    std::cout << "\033[1;31m" << " |  _ < (_| | (_| | | || |_| | | | |  __/" << "\033[0m" << std::endl;
-    std::cout << "\033[1;31m" << " |_| \\_\\__,_|\\__,_| |_| \\__,_|_| |_|\\___|" << "\033[0m"
-              << " v" << RADTUNE_VERSION << " (ADLX)" << std::endl;
+    // Banner only when a human is watching. Piped output feeds the GUI, scripts
+    // and machine-readable verbs (-get/-gpus/-monitor), where five lines of
+    // ASCII art are pure noise - and they used to land inside the GUI's dialogs.
+    if (_isatty(_fileno(stdout))) {
+        std::cout << "\033[1;31m" << "  ____           _ _____                 " << "\033[0m" << std::endl;
+        std::cout << "\033[1;31m" << " |  _ \\ __ _  __| |_   _|   _ _ __   ___ " << "\033[0m" << std::endl;
+        std::cout << "\033[1;31m" << " | |_) / _` |/ _` | | || | | | '_ \\ / _ \\" << "\033[0m" << std::endl;
+        std::cout << "\033[1;31m" << " |  _ < (_| | (_| | | || |_| | | | |  __/" << "\033[0m" << std::endl;
+        std::cout << "\033[1;31m" << " |_| \\_\\__,_|\\__,_| |_| \\__,_|_| |_|\\___|" << "\033[0m"
+                  << " v" << RADTUNE_VERSION << " (ADLX)" << std::endl;
+    }
 
     // Task Scheduler management does not need the GPU/ADLX; handle it first.
     int scheduleExit = 0;
@@ -606,11 +624,24 @@ int main(int argc, char* argv[]) {
                 std::cerr << "[!] GPU index " << targetGpu << " out of range." << std::endl;
                 exitCode = 1;
             }
+        } else if (cmd == "-gpus") {
+            // Machine-readable GPU list for the GUI's device dropdown (-list is
+            // formatted for humans).
+            for (adlx_uint i = 0; i < gpus->Size(); ++i) {
+                IADLXGPUPtr gpu;
+                gpus->At(i, &gpu);
+                const char* name = nullptr;
+                gpu->Name(&name);
+                std::cout << "gpu" << i << "=" << (name ? name : "Unknown GPU") << "\n";
+            }
+            std::cout.flush();
         } else if (cmd == "-monitor") {
             int targetGpu = 0;
+            int watchMs = 0;   // 0 = single sample and exit
             for (int i = 2; i < argc; ++i) {
                 std::string arg = argv[i];
                 if (arg.find("gpu=") == 0) targetGpu = std::stoi(arg.substr(4));
+                else if (arg.find("watch=") == 0) watchMs = std::stoi(arg.substr(6));
             }
             // Scoped locally so the perf-monitoring interface is released before
             // g_ADLX.Terminate() (same teardown rule as the other interfaces).
@@ -621,7 +652,22 @@ int main(int argc, char* argv[]) {
             } else if (targetGpu < (int)gpus->Size()) {
                 IADLXGPUPtr gpu;
                 gpus->At(targetGpu, &gpu);
-                PrintGpuMetrics(gpu, perf);
+                if (watchMs <= 0) {
+                    PrintGpuMetrics(gpu, perf);
+                } else {
+                    // Streaming mode. ADLX init costs ~600 ms, so re-launching
+                    // the process per sample would make "live" both wasteful and
+                    // permanently half a second stale. Here we init once and emit
+                    // a sample every watchMs, each terminated by a blank line so
+                    // the reader can tell complete records apart. Runs until the
+                    // parent closes the pipe or kills us.
+                    if (watchMs < 100) watchMs = 100;   // no busy-looping
+                    while (std::cout) {
+                        PrintGpuMetrics(gpu, perf);
+                        std::cout << std::endl;         // record separator + flush
+                        std::this_thread::sleep_for(std::chrono::milliseconds(watchMs));
+                    }
+                }
             } else {
                 std::cerr << "[!] GPU index " << targetGpu << " out of range." << std::endl;
                 exitCode = 1;
@@ -683,7 +729,8 @@ int main(int argc, char* argv[]) {
             std::cout << "Usage:" << std::endl;
             std::cout << "  RadTune -list" << std::endl;
             std::cout << "  RadTune -get [gpu=N]" << std::endl;
-            std::cout << "  RadTune -monitor [gpu=N]      (live telemetry: clocks, temps, fan, power)" << std::endl;
+            std::cout << "  RadTune -gpus                 (machine-readable GPU list)" << std::endl;
+            std::cout << "  RadTune -monitor [gpu=N] [watch=ms]   (live telemetry; watch= streams samples)" << std::endl;
             std::cout << "  RadTune -set [gpu=N] [core=MHz] [coremin=MHz] [volt=mV] [vram=MHz] [memtiming=default|fast|fast2|auto|level1|level2] [power=%] [zerorpm=0|1]" << std::endl;
             std::cout << "  RadTune -load profile.xml [gpu=N]" << std::endl;
             std::cout << "  RadTune -schedule <logon|startup|daily=HH:MM> <-set ...|-load ...>" << std::endl;

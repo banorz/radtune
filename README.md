@@ -126,16 +126,21 @@ Prefer not to type commands? `RadTuneGUI.exe` is a small native frontend for the
 - Keep `RadTuneGUI.exe` **next to** `RadTune.exe` (both land in `build/Release/`); the GUI looks for the CLI in its own folder.
 - It requests administrator rights on launch, so the tuning it triggers has the privileges ADLX needs.
 - **Apply now** runs the tuning immediately; **Create schedule** registers the Task Scheduler entry with the chosen trigger (logon / startup / daily); **Show status** / **Remove schedule** manage it.
-- **Read from GPU** pulls the card's current values into the form (via `RadTune -get`).
-- The **Live** tab has a Refresh button showing current telemetry on demand (via `RadTune -monitor`).
+- It **reads the card at startup** — the form shows the GPU's real values without pressing anything. **Read from GPU** re-reads on demand.
+- The **GPU dropdown** lists your actual cards; the **VRAM mem timing** dropdown lists only the presets *your* card supports.
+- The **Live** tab shows telemetry refreshed once a second (streamed from a single `RadTune -monitor watch=1000` process, started when you open the tab and stopped when you leave it).
+- Results appear in a **dialog**, with an error icon when something was rejected.
 - The form **remembers your last settings** between runs (stored under `HKCU\Software\RadTune`).
 
 The GUI is a thin wrapper — the CLI remains the engine and is fully usable on its own.
 
-The CLI also exposes machine-readable queries used by the GUI:
+The CLI also exposes machine-readable queries used by the GUI (these omit the
+banner when the output is not a terminal):
 ```bash
-RadTune.exe -get [gpu=N]       # current tuning as key=value lines (core=, volt=, power=, ...)
-RadTune.exe -monitor [gpu=N]   # live telemetry as key=value lines (gpuclock=, temp=, fan=, ...)
+RadTune.exe -gpus                          # gpu0=AMD Radeon RX 9070 XT
+RadTune.exe -get [gpu=N]                   # current tuning (core=, volt=, memtimingsupported=, ...)
+RadTune.exe -monitor [gpu=N]               # one telemetry sample
+RadTune.exe -monitor [gpu=N] watch=1000    # stream a sample every second
 ```
 
 ## Exit Codes

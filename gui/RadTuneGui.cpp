@@ -13,6 +13,7 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <string>
+#include <vector>
 #include <cstdlib>
 #include <utility>
 #include <initializer_list>
@@ -37,18 +38,19 @@ enum : int {
 
 HFONT g_font = nullptr, g_mono = nullptr, g_title = nullptr, g_sub = nullptr;
 HWND g_source, g_gpu, g_core, g_coremin, g_volt, g_vram, g_memtiming, g_power, g_zerorpm,
-     g_profile, g_browse, g_trigger, g_time, g_output;
+     g_profile, g_browse, g_trigger, g_time, g_status;
 // Tab strip and its two pages. Each page is a container child window holding
 // that tab's controls; exactly one is visible at a time. Overlapping sibling
 // windows (the first attempt) repaint over each other, so the Live page showed
 // through the tuning form - containers avoid the problem entirely.
+HWND g_main = nullptr;   // main window; owner of the result dialogs
 HWND g_tabs, g_pageTuning, g_pageLive, g_live;
 
-// GUI combo index (1-based, 0 = "Leave unchanged") -> RadTune memtiming= token.
-const wchar_t* const MEMTIMING_TOKENS[] = {
-    L"", L"default", L"fast", L"fast2", L"auto", L"level1", L"level2"
-};
-constexpr int MEMTIMING_COUNT = 6;  // presets, excluding "Leave unchanged"
+// memtiming combo index -> RadTune token. Index 0 is always "Leave unchanged"
+// (empty token). The rest is filled from the card's OWN supported list, which
+// `-get` reports as memtimingsupported=: the ADLX enum is a superset across
+// architectures, so a hardcoded list would offer presets the GPU refuses.
+std::vector<std::wstring> g_memtimingTokens = { L"" };
 
 const wchar_t* REG_KEY = L"Software\\RadTune";
 
@@ -74,6 +76,9 @@ std::wstring Quote(const std::wstring& s) { return L"\"" + s + L"\""; }
 
 int ComboSel(HWND h) { return (int)SendMessageW(h, CB_GETCURSEL, 0, 0); }
 void SetCombo(HWND h, int i) { SendMessageW(h, CB_SETCURSEL, i, 0); }
+int ComboCount(HWND h) { return (int)SendMessageW(h, CB_GETCOUNT, 0, 0); }
+void ComboClear(HWND h) { SendMessageW(h, CB_RESETCONTENT, 0, 0); }
+void ComboAdd(HWND h, const std::wstring& s) { SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)s.c_str()); }
 
 std::string WideToAcp(const std::wstring& w) {
     if (w.empty()) return "";
@@ -156,7 +161,7 @@ std::wstring RegRead(const wchar_t* name) {
 void SaveSettings() {
     auto e = [](HWND h, const wchar_t* n) { RegWrite(n, GetText(h)); };
     auto c = [](HWND h, const wchar_t* n) { RegWrite(n, std::to_wstring(ComboSel(h))); };
-    c(g_source, L"source"); e(g_gpu, L"gpu"); e(g_core, L"core"); e(g_coremin, L"coremin");
+    c(g_source, L"source"); c(g_gpu, L"gpu"); e(g_core, L"core"); e(g_coremin, L"coremin");
     e(g_volt, L"volt"); e(g_vram, L"vram"); c(g_memtiming, L"memtiming"); e(g_power, L"power");
     c(g_zerorpm, L"zerorpm");
     e(g_profile, L"profile"); c(g_trigger, L"trigger"); e(g_time, L"time");
@@ -165,7 +170,7 @@ void SaveSettings() {
 void LoadSettings() {
     auto e = [](HWND h, const wchar_t* n) { std::wstring v = RegRead(n); if (!v.empty()) SetWindowTextW(h, v.c_str()); };
     auto c = [](HWND h, const wchar_t* n) { std::wstring v = RegRead(n); if (!v.empty()) SetCombo(h, _wtoi(v.c_str())); };
-    c(g_source, L"source"); e(g_gpu, L"gpu"); e(g_core, L"core"); e(g_coremin, L"coremin");
+    c(g_source, L"source"); e(g_core, L"core"); e(g_coremin, L"coremin");
     e(g_volt, L"volt"); e(g_vram, L"vram"); c(g_memtiming, L"memtiming"); e(g_power, L"power");
     c(g_zerorpm, L"zerorpm");
     e(g_profile, L"profile"); c(g_trigger, L"trigger"); e(g_time, L"time");
@@ -218,8 +223,14 @@ void UpdateSourceState() {
     EnableWindow(g_browse, profile);
 }
 
+// The GPU dropdown lists device names; the CLI wants the index.
+std::wstring SelectedGpu() {
+    const int i = ComboSel(g_gpu);
+    return std::to_wstring(i < 0 ? 0 : i);
+}
+
 std::wstring BuildPayload(std::wstring& err) {
-    const std::wstring gpu = Trim(GetText(g_gpu));
+    const std::wstring gpu = SelectedGpu();
     if (ComboSel(g_source) == 1) {  // Profile (-load)
         const std::wstring path = Trim(GetText(g_profile));
         if (path.empty()) { err = L"Select a profile .xml file first."; return L""; }
@@ -235,7 +246,8 @@ std::wstring BuildPayload(std::wstring& err) {
     add(g_core, L"core"); add(g_coremin, L"coremin"); add(g_volt, L"volt");
     add(g_vram, L"vram"); add(g_power, L"power");
     const int mt = ComboSel(g_memtiming);  // 0 = leave unchanged, else preset
-    if (mt > 0 && mt <= MEMTIMING_COUNT) tail += L" memtiming=" + std::wstring(MEMTIMING_TOKENS[mt]);
+    if (mt > 0 && mt < (int)g_memtimingTokens.size())
+        tail += L" memtiming=" + g_memtimingTokens[mt];
     const int zr = ComboSel(g_zerorpm);   // 0 leave, 1 enable, 2 disable
     if (zr == 1) tail += L" zerorpm=1";
     else if (zr == 2) tail += L" zerorpm=0";
@@ -245,7 +257,8 @@ std::wstring BuildPayload(std::wstring& err) {
     return s + tail;
 }
 
-std::string RunAndCapture(const std::wstring& cmdLine) {
+std::string RunAndCapture(const std::wstring& cmdLine, DWORD* exitCode = nullptr) {
+    if (exitCode) *exitCode = 1;   // assume failure until the child says otherwise
     SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
     HANDLE rd = nullptr, wr = nullptr;
     if (!CreatePipe(&rd, &wr, &sa, 0)) return "[GUI] CreatePipe failed.";
@@ -271,33 +284,42 @@ std::string RunAndCapture(const std::wstring& cmdLine) {
     while (ReadFile(rd, buf, sizeof(buf), &n, nullptr) && n > 0) out.append(buf, n);
     CloseHandle(rd);
     WaitForSingleObject(pi.hProcess, INFINITE);
+    if (exitCode) GetExitCodeProcess(pi.hProcess, exitCode);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
     return out;
 }
 
-void ShowOutput(const std::string& acp) {
-    SetWindowTextW(g_output, AcpToWide(CleanOutput(acp)).c_str());
+// One-line progress/state text under the form. Operation results are reported
+// in a dialog instead: a modal box cannot be missed the way a side panel can,
+// and the CLI's exit code tells us whether it should be an error or a success.
+void SetStatus(const std::wstring& s) { SetWindowTextW(g_status, s.c_str()); }
+
+void ShowResultDialog(const std::string& acp, DWORD exitCode) {
+    std::wstring body = Trim(AcpToWide(CleanOutput(acp)));
+    if (body.empty()) body = (exitCode == 0) ? L"Done." : L"The command failed but produced no output.";
+    MessageBoxW(g_main, body.c_str(), exitCode == 0 ? L"RadTune" : L"RadTune - failed",
+                MB_OK | (exitCode == 0 ? MB_ICONINFORMATION : MB_ICONERROR));
 }
 
 // --- Async command execution -------------------------------------------------
 // RadTune.exe (ADLX init) can take ~1s; running it on the UI thread froze the
 // window. Run it on a worker thread and post the captured output back so the UI
 // stays responsive.
-enum { RUN_SHOW = 1, RUN_READ = 2, RUN_MONITOR = 3 };
+enum { RUN_SHOW = 1, RUN_READ = 2, RUN_GPUS = 3 };
 constexpr UINT WM_APP_RESULT = WM_APP + 1;
 
-HWND g_main = nullptr;
 bool g_busy = false;
-std::string g_header;                 // "> cmd" echo, prepended to the result
 
 struct RunCtx { int kind; std::wstring cmd; };
-struct RunOut { int kind; std::string text; };
+struct RunOut { int kind; std::string text; DWORD exitCode; };
 
 DWORD WINAPI RunWorker(LPVOID p) {
     RunCtx* c = static_cast<RunCtx*>(p);
-    std::string out = RunAndCapture(c->cmd);
-    PostMessageW(g_main, WM_APP_RESULT, 0, reinterpret_cast<LPARAM>(new RunOut{ c->kind, std::move(out) }));
+    DWORD rc = 1;
+    std::string out = RunAndCapture(c->cmd, &rc);
+    PostMessageW(g_main, WM_APP_RESULT, 0,
+                 reinterpret_cast<LPARAM>(new RunOut{ c->kind, std::move(out), rc }));
     delete c;
     return 0;
 }
@@ -306,7 +328,6 @@ void SetActionsEnabled(bool on) {
     // The action buttons live on the tuning page; Refresh lives on the Live page.
     for (int id : { IDC_READ, IDC_APPLY, IDC_SCHEDULE, IDC_STATUS, IDC_REMOVE })
         EnableWindow(GetDlgItem(g_pageTuning, id), on);
-    EnableWindow(GetDlgItem(g_pageLive, IDC_REFRESH), on);
 }
 
 // Launches "RadTune.exe <args>" on a worker thread; the result comes back via
@@ -314,8 +335,7 @@ void SetActionsEnabled(bool on) {
 void StartRun(int kind, const std::wstring& args) {
     if (g_busy) return;
     const std::wstring cmd = Quote(RadTunePath()) + L" " + args;
-    g_header = "> " + WideToAcp(cmd) + "\r\n\r\n";
-    ShowOutput(g_header + "Running...");
+    SetStatus(L"Running...");
     g_busy = true;
     SetActionsEnabled(false);
     RunCtx* c = new RunCtx{ kind, cmd };
@@ -326,7 +346,7 @@ void StartRun(int kind, const std::wstring& args) {
         delete c;
         g_busy = false;
         SetActionsEnabled(true);
-        ShowOutput(g_header + "[GUI] Could not start worker thread.");
+        SetStatus(L"Could not start worker thread.");
     }
 }
 
@@ -336,6 +356,10 @@ bool ParseGetOutput(const std::string& raw) {
     SetCombo(g_source, 0);  // switch to Manual so fields are visible/editable
     UpdateSourceState();
     bool got = false;
+    // memtiming needs both lines before we can act: the supported list defines
+    // the dropdown, the current value picks the entry. They arrive in order but
+    // we collect and apply them after the loop rather than rely on it.
+    std::wstring mtCurrent, mtSupported;
     size_t pos = 0;
     while (pos < clean.size()) {
         size_t nl = clean.find("\r\n", pos);
@@ -351,17 +375,61 @@ bool ParseGetOutput(const std::string& raw) {
         else if (key == "volt") SetWindowTextW(g_volt, v.c_str());
         else if (key == "vram") SetWindowTextW(g_vram, v.c_str());
         else if (key == "power") SetWindowTextW(g_power, v.c_str());
-        else if (key == "memtiming") {
-            int idx = 0;  // 0 = "Leave unchanged" if the token is unrecognised
-            for (int i = 1; i <= MEMTIMING_COUNT; ++i)
-                if (v == MEMTIMING_TOKENS[i]) { idx = i; break; }
-            SetCombo(g_memtiming, idx);
-        }
+        else if (key == "memtiming") mtCurrent = v;
+        else if (key == "memtimingsupported") mtSupported = v;
         else if (key == "zerorpm") SetCombo(g_zerorpm, v == L"1" ? 1 : 2);
         else known = false;
         if (known) got = true;
     }
+
+    if (!mtSupported.empty()) {
+        // Rebuild the dropdown to exactly what this card accepts.
+        g_memtimingTokens.assign(1, L"");
+        ComboClear(g_memtiming);
+        ComboAdd(g_memtiming, L"Leave unchanged");
+        size_t p = 0;
+        while (p <= mtSupported.size()) {
+            const size_t c = mtSupported.find(L',', p);
+            std::wstring tok = Trim(mtSupported.substr(p, c == std::wstring::npos ? std::wstring::npos : c - p));
+            if (!tok.empty()) { g_memtimingTokens.push_back(tok); ComboAdd(g_memtiming, tok); }
+            if (c == std::wstring::npos) break;
+            p = c + 1;
+        }
+    }
+    if (!mtCurrent.empty()) {
+        int idx = 0;   // 0 = "Leave unchanged" when the value isn't in the list
+        for (size_t i = 1; i < g_memtimingTokens.size(); ++i)
+            if (g_memtimingTokens[i] == mtCurrent) { idx = (int)i; break; }
+        SetCombo(g_memtiming, idx);
+    }
     return got;
+}
+
+// Fills the GPU dropdown from "-gpus" output (gpu0=NAME lines). Returns the
+// number of GPUs found.
+int ParseGpusOutput(const std::string& raw) {
+    const std::string clean = CleanOutput(raw);
+    std::vector<std::wstring> names;
+    size_t pos = 0;
+    while (pos < clean.size()) {
+        size_t nl = clean.find("\r\n", pos);
+        std::string line = clean.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+        pos = (nl == std::string::npos) ? clean.size() : nl + 2;
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        if (line.compare(0, 3, "gpu") != 0) continue;
+        names.push_back(Trim(AcpToWide(line.substr(eq + 1))));
+    }
+    if (names.empty()) return 0;
+    ComboClear(g_gpu);
+    for (size_t i = 0; i < names.size(); ++i)
+        ComboAdd(g_gpu, std::to_wstring(i) + L": " + names[i]);
+    // Restore the remembered selection now that the list exists.
+    const std::wstring saved = RegRead(L"gpu");
+    int sel = saved.empty() ? 0 : _wtoi(saved.c_str());
+    if (sel < 0 || sel >= (int)names.size()) sel = 0;
+    SetCombo(g_gpu, sel);
+    return (int)names.size();
 }
 
 // Turns "-monitor" key=value output into a human-readable readout for the Live
@@ -404,46 +472,53 @@ std::string FormatMonitor(const std::string& raw) {
     return out;
 }
 
+void OnReadGpu();   // defined below; the -gpus result chains straight into it
+
 // Runs on the UI thread when a worker finishes (WM_APP_RESULT).
-void OnRunResult(int kind, const std::string& raw) {
+void OnRunResult(int kind, const std::string& raw, DWORD exitCode) {
+    bool chainRead = false;
+    // Reads are routine and their result is visible in the fields, so they only
+    // interrupt with a dialog when they actually fail. Actions the user asked
+    // for (apply / schedule) always report back.
     if (kind == RUN_READ) {
         const bool got = ParseGetOutput(raw);
-        const std::string note = got ? "" : "[GUI] No tuning values were read from the GPU.\r\n\r\n";
-        ShowOutput(note + g_header + raw);
-    } else if (kind == RUN_MONITOR) {
-        SetWindowTextW(g_live, AcpToWide(FormatMonitor(raw)).c_str());
+        SetStatus(got ? L"Values read from the GPU." : L"No tuning values were read.");
+        if (!got || exitCode != 0) ShowResultDialog(raw, exitCode);
+    } else if (kind == RUN_GPUS) {
+        // Startup: the device list arrived. If we found a GPU there's no reason
+        // to make the user press a button to see its current tuning - read it.
+        const int n = ParseGpusOutput(raw);
+        if (n > 0) { chainRead = true; SetStatus(L""); }
+        else {
+            SetStatus(L"No AMD GPU found.");
+            ShowResultDialog(raw, exitCode);
+        }
     } else {
-        ShowOutput(g_header + raw);
+        SetStatus(exitCode == 0 ? L"Done." : L"Failed.");
+        ShowResultDialog(raw, exitCode);
     }
     SaveSettings();
     g_busy = false;
     SetActionsEnabled(true);
-}
-
-// Live tab: read current telemetry once (on demand) via "-monitor".
-void OnRefresh() {
-    std::wstring gpu = Trim(GetText(g_gpu));
-    if (gpu.empty()) gpu = L"0";
-    SetWindowTextW(g_live, L"Reading...");
-    StartRun(RUN_MONITOR, L"-monitor gpu=" + gpu);
+    if (chainRead) OnReadGpu();
 }
 
 void OnApply() {
     std::wstring err;
     const std::wstring payload = BuildPayload(err);
-    if (payload.empty()) { ShowOutput("[GUI] " + WideToAcp(err)); return; }
+    if (payload.empty()) { MessageBoxW(g_main, err.c_str(), L"RadTune", MB_OK | MB_ICONWARNING); return; }
     StartRun(RUN_SHOW, payload);
 }
 
 void OnSchedule() {
     std::wstring err;
     const std::wstring payload = BuildPayload(err);
-    if (payload.empty()) { ShowOutput("[GUI] " + WideToAcp(err)); return; }
+    if (payload.empty()) { MessageBoxW(g_main, err.c_str(), L"RadTune", MB_OK | MB_ICONWARNING); return; }
     std::wstring trigger = Trim(GetText(g_trigger));  // logon | startup | daily
     if (trigger == L"daily") {
         const std::wstring t = Trim(GetText(g_time));
         if (t.size() != 5 || t[2] != L':') {
-            ShowOutput("[GUI] For a daily schedule, enter the time as HH:MM (e.g. 09:00).");
+            MessageBoxW(g_main, L"For a daily schedule, enter the time as HH:MM (e.g. 09:00).", L"RadTune", MB_OK | MB_ICONWARNING);
             return;
         }
         trigger += L"=" + t;
@@ -452,9 +527,82 @@ void OnSchedule() {
 }
 
 void OnReadGpu() {
-    std::wstring gpu = Trim(GetText(g_gpu));
-    if (gpu.empty()) gpu = L"0";
-    StartRun(RUN_READ, L"-get gpu=" + gpu);
+    StartRun(RUN_READ, L"-get gpu=" + SelectedGpu());
+}
+
+// --- Live telemetry stream --------------------------------------------------
+// The Live tab keeps ONE "RadTune -monitor watch=..." process running and reads
+// its samples as they arrive. Re-launching per sample would pay ~600 ms of ADLX
+// init every time, so the reading would always be that stale and the machine
+// would churn through processes. Started when the tab is shown, killed when it
+// is hidden or the window closes.
+constexpr UINT WM_APP_LIVE = WM_APP + 2;
+constexpr int LIVE_INTERVAL_MS = 1000;
+
+HANDLE g_liveProc = nullptr;   // child process (terminated to stop it)
+HANDLE g_liveRead = nullptr;   // our end of its stdout pipe
+volatile bool g_liveStop = false;
+
+DWORD WINAPI LiveWorker(LPVOID) {
+    std::string acc;
+    char buf[2048];
+    DWORD n = 0;
+    while (!g_liveStop && ReadFile(g_liveRead, buf, sizeof(buf), &n, nullptr) && n > 0) {
+        // Drop CR while accumulating: the child's CRT writes text mode, so the
+        // blank line separating samples arrives as "\r\n\r\n". Searching the raw
+        // bytes for "\n\n" never matched and no sample was ever emitted.
+        for (DWORD i = 0; i < n; ++i)
+            if (buf[i] != '\r') acc += buf[i];
+        // Each sample is terminated by a blank line, so a "\n\n" marks one
+        // complete record (the startup banner rides along with the first one
+        // and is ignored by FormatMonitor, which only reads key=value lines).
+        size_t cut;
+        while ((cut = acc.find("\n\n")) != std::string::npos) {
+            auto* s = new std::string(acc.substr(0, cut));
+            acc.erase(0, cut + 2);
+            if (!PostMessageW(g_main, WM_APP_LIVE, 0, reinterpret_cast<LPARAM>(s))) delete s;
+        }
+    }
+    return 0;
+}
+
+void StopLive() {
+    g_liveStop = true;
+    if (g_liveProc) { TerminateProcess(g_liveProc, 0); CloseHandle(g_liveProc); g_liveProc = nullptr; }
+    if (g_liveRead) { CloseHandle(g_liveRead); g_liveRead = nullptr; }
+}
+
+void StartLive() {
+    if (g_liveProc) return;   // already streaming
+    SetWindowTextW(g_live, L"Starting telemetry...");
+
+    SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
+    HANDLE rd = nullptr, wr = nullptr;
+    if (!CreatePipe(&rd, &wr, &sa, 0)) return;
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOW si{}; si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = wr; si.hStdError = wr;
+
+    std::wstring cmd = Quote(RadTunePath()) + L" -monitor gpu=" + SelectedGpu() +
+                       L" watch=" + std::to_wstring(LIVE_INTERVAL_MS);
+    PROCESS_INFORMATION pi{};
+    const BOOL ok = CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, TRUE,
+                                   CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    CloseHandle(wr);
+    if (!ok) {
+        CloseHandle(rd);
+        SetWindowTextW(g_live, L"[GUI] Could not start RadTune.exe for live telemetry.");
+        return;
+    }
+    CloseHandle(pi.hThread);
+    g_liveProc = pi.hProcess;
+    g_liveRead = rd;
+    g_liveStop = false;
+    HANDLE h = CreateThread(nullptr, 0, LiveWorker, nullptr, 0, nullptr);
+    if (h) CloseHandle(h);
+    else   StopLive();
 }
 
 void OnBrowse() {
@@ -496,17 +644,24 @@ void BuildUi(HWND w) {
 
     // ---- Group 1: GPU tuning ----
     int gy = 6;
-    MkGroup(p, L" GPU tuning ", M, gy, GW, 368);
+    MkGroup(p, L" GPU tuning ", M, gy, GW, 400);
     int y = gy + 24;
     MkLabel(p, L"Source", LBLX, y + 4, FLDX - LBLX - 8);
     g_source = MkCombo(p, IDC_SOURCE, FLDX, y, 300, { L"Manual tuning  (-set)", L"Load profile  (-load)" });
     y += 32;
 
-    MkLabel(p, L"GPU index", LBLX, y + 4, FLDX - LBLX - 8);
-    g_gpu = MkEdit(p, IDC_GPU, FLDX, y, 60);
-    SetWindowTextW(g_gpu, L"0");
-    MkButton(p, IDC_READ, L"Read from GPU", FLDX + 72, y - 1, 150, 26);
+    // Right under Source: it is the input for the "Load profile" source.
+    MkLabel(p, L"Profile .xml", LBLX, y + 4, FLDX - LBLX - 8);
+    g_profile = MkEdit(p, IDC_PROFILE, FLDX, y, GW - (FLDX - M) - 120);
+    g_browse = MkButton(p, IDC_BROWSE, L"Browse...", M + GW - 104, y - 1, 88, 26);
     y += 34;
+
+    // Device list is filled at startup from "-gpus"; the CLI takes the index.
+    MkLabel(p, L"GPU", LBLX, y + 4, FLDX - LBLX - 8);
+    g_gpu = MkCombo(p, IDC_GPU, FLDX, y, 300, { });
+    y += 32;
+    MkButton(p, IDC_READ, L"Read from GPU", FLDX, y - 2, 150, 26);
+    y += 32;
 
     g_core    = LabeledEdit(p, L"Core max offset (MHz)", IDC_CORE,    y); y += 30;
     g_coremin = LabeledEdit(p, L"Core min (MHz)",        IDC_COREMIN, y); y += 30;
@@ -514,8 +669,9 @@ void BuildUi(HWND w) {
     g_vram    = LabeledEdit(p, L"VRAM max (MHz)",        IDC_VRAM,    y); y += 30;
 
     MkLabel(p, L"VRAM mem timing", LBLX, y + 4, FLDX - LBLX - 8);
-    g_memtiming = MkCombo(p, IDC_MEMTIMING, FLDX, y, 200,
-        { L"Leave unchanged", L"default", L"fast", L"fast2", L"auto", L"level1", L"level2" });
+    // Only "Leave unchanged" up front - the real presets are added once we know
+    // which ones this card supports (from -get's memtimingsupported=).
+    g_memtiming = MkCombo(p, IDC_MEMTIMING, FLDX, y, 200, { L"Leave unchanged" });
     y += 32;
 
     g_power   = LabeledEdit(p, L"Power limit (%)", IDC_POWER, y); y += 30;
@@ -524,12 +680,8 @@ void BuildUi(HWND w) {
     g_zerorpm = MkCombo(p, IDC_ZERORPM, FLDX, y, 200, { L"Leave unchanged", L"Enable", L"Disable" });
     y += 32;
 
-    MkLabel(p, L"Profile .xml", LBLX, y + 4, FLDX - LBLX - 8);
-    g_profile = MkEdit(p, IDC_PROFILE, FLDX, y, GW - (FLDX - M) - 120);
-    g_browse = MkButton(p, IDC_BROWSE, L"Browse...", M + GW - 104, y - 1, 88, 26);
-
     // ---- Apply button ----
-    int by = gy + 368 + 10;
+    int by = gy + 400 + 10;
     MkButton(p, IDC_APPLY, L"Apply now", M, by, 200, 32);
 
     // ---- Group 2: Automation ----
@@ -546,19 +698,15 @@ void BuildUi(HWND w) {
     MkButton(p, IDC_STATUS,   L"Show status",     LBLX + 182, ty, 140, 28);
     MkButton(p, IDC_REMOVE,   L"Remove schedule", LBLX + 330, ty, 170, 28);
 
-    // ---- Group 3: Output ----
-    int oy = ay + 104 + 10;
-    MkGroup(p, L" Output ", M, oy, GW, pageH - oy - M);
-    g_output = Mk(L"EDIT", L"", WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
-                  WS_EX_CLIENTEDGE, LBLX, oy + 22, GW - 32, pageH - oy - M - 32, p, IDC_OUTPUT, g_mono);
+    // ---- Status line (results are reported in a dialog, not a panel) ----
+    int oy = ay + 104 + 12;
+    g_status = Mk(L"STATIC", L"", SS_LEFT | SS_ENDELLIPSIS, 0, M, oy, GW, 20, p, IDC_OUTPUT, g_font);
 
-    // ---- Live page: on-demand telemetry (no polling) ----
+    // ---- Live page: streams while the tab is open, no button ----
     MkGroup(g_pageLive, L" Live readings ", M, gy, GW, pageH - gy - M);
-    MkButton(g_pageLive, IDC_REFRESH, L"Refresh", LBLX, gy + 26, 160, 30);
     g_live = Mk(L"EDIT", L"", WS_VSCROLL | ES_MULTILINE | ES_READONLY,
-                WS_EX_CLIENTEDGE, LBLX, gy + 66, GW - 32, pageH - gy - M - 76,
+                WS_EX_CLIENTEDGE, LBLX, gy + 26, GW - 32, pageH - gy - M - 36,
                 g_pageLive, IDC_LIVE, g_mono);
-    SetWindowTextW(g_live, L"Click Refresh to read the GPU's current telemetry.");
 
     LoadSettings();
     UpdateSourceState();
@@ -653,6 +801,9 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         g_title = MakeFont(15, FW_SEMIBOLD, L"Segoe UI");
         g_sub   = MakeFont(9,  FW_NORMAL,   L"Segoe UI");
         BuildUi(w);
+        // Enumerate the GPUs straight away; the result chains into a -get so the
+        // form shows the card's real values without the user pressing anything.
+        StartRun(RUN_GPUS, L"-gpus");
         return 0;
     case WM_PAINT: {
         PAINTSTRUCT ps;
@@ -668,8 +819,14 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_APP_RESULT: {
         auto* res = reinterpret_cast<RunOut*>(lp);
-        OnRunResult(res->kind, res->text);
+        OnRunResult(res->kind, res->text, res->exitCode);
         delete res;
+        return 0;
+    }
+    case WM_APP_LIVE: {
+        auto* s = reinterpret_cast<std::string*>(lp);
+        SetWindowTextW(g_live, AcpToWide(FormatMonitor(*s)).c_str());
+        delete s;
         return 0;
     }
     case WM_NOTIFY: {
@@ -678,6 +835,8 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
             const bool live = SendMessageW(g_tabs, TCM_GETCURSEL, 0, 0) == 1;
             ShowWindow(g_pageLive,   live ? SW_SHOW : SW_HIDE);
             ShowWindow(g_pageTuning, live ? SW_HIDE : SW_SHOW);
+            // Only stream while the tab is actually on screen.
+            if (live) StartLive(); else StopLive();
             return 0;
         }
         break;
@@ -685,16 +844,23 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_COMMAND:
         switch (LOWORD(wp)) {
         case IDC_SOURCE: if (HIWORD(wp) == CBN_SELCHANGE) UpdateSourceState(); return 0;
+        case IDC_GPU:
+            // Switching card: re-read its tuning, and re-point a running stream.
+            if (HIWORD(wp) == CBN_SELCHANGE) {
+                if (g_liveProc) { StopLive(); StartLive(); }
+                OnReadGpu();
+            }
+            return 0;
         case IDC_READ:     OnReadGpu();  return 0;
         case IDC_APPLY:    OnApply();    return 0;
         case IDC_SCHEDULE: OnSchedule(); return 0;
         case IDC_STATUS:   StartRun(RUN_SHOW, L"-schedule status"); return 0;
         case IDC_REMOVE:   StartRun(RUN_SHOW, L"-schedule remove"); return 0;
         case IDC_BROWSE:   OnBrowse();   return 0;
-        case IDC_REFRESH:  OnRefresh();  return 0;
         }
         return 0;
     case WM_DESTROY:
+        StopLive();
         SaveSettings();
         DeleteObject(g_font); DeleteObject(g_mono); DeleteObject(g_title); DeleteObject(g_sub);
         PostQuitMessage(0);
@@ -731,7 +897,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nCmd) {
 
     HWND hwnd = CreateWindowW(wc.lpszClassName, L"RadTune GUI",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
-        CW_USEDEFAULT, CW_USEDEFAULT, 600, 872, nullptr, nullptr, hInst, nullptr);
+        CW_USEDEFAULT, CW_USEDEFAULT, 600, 752, nullptr, nullptr, hInst, nullptr);
     if (!hwnd) return 1;
 
     ShowWindow(hwnd, nCmd);
