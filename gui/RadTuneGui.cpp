@@ -38,10 +38,11 @@ enum : int {
 HFONT g_font = nullptr, g_mono = nullptr, g_title = nullptr, g_sub = nullptr;
 HWND g_source, g_gpu, g_core, g_coremin, g_volt, g_vram, g_memtiming, g_power, g_zerorpm,
      g_profile, g_browse, g_trigger, g_time, g_output;
-// Tab strip + the "Live" telemetry page. g_pageLive is an opaque child window
-// that overlays the tuning form when the Live tab is selected (shown/hidden on
-// tab change); g_live is its read-only readout box.
-HWND g_tabs, g_pageLive, g_live;
+// Tab strip and its two pages. Each page is a container child window holding
+// that tab's controls; exactly one is visible at a time. Overlapping sibling
+// windows (the first attempt) repaint over each other, so the Live page showed
+// through the tuning form - containers avoid the problem entirely.
+HWND g_tabs, g_pageTuning, g_pageLive, g_live;
 
 // GUI combo index (1-based, 0 = "Leave unchanged") -> RadTune memtiming= token.
 const wchar_t* const MEMTIMING_TOKENS[] = {
@@ -302,8 +303,10 @@ DWORD WINAPI RunWorker(LPVOID p) {
 }
 
 void SetActionsEnabled(bool on) {
+    // The action buttons live on the tuning page; Refresh lives on the Live page.
     for (int id : { IDC_READ, IDC_APPLY, IDC_SCHEDULE, IDC_STATUS, IDC_REMOVE })
-        EnableWindow(GetDlgItem(g_main, id), on);
+        EnableWindow(GetDlgItem(g_pageTuning, id), on);
+    EnableWindow(GetDlgItem(g_pageLive, IDC_REFRESH), on);
 }
 
 // Launches "RadTune.exe <args>" on a worker thread; the result comes back via
@@ -479,79 +482,83 @@ void BuildUi(HWND w) {
     ti.pszText = (LPWSTR)L"Tuning"; SendMessageW(g_tabs, TCM_INSERTITEMW, 0, (LPARAM)&ti);
     ti.pszText = (LPWSTR)L"Live";   SendMessageW(g_tabs, TCM_INSERTITEMW, 1, (LPARAM)&ti);
 
+    // ---- Two page containers, same rect; exactly one is ever visible ----
+    const int contentTop = HEADER + 4 + TABH;
+    const int pageH = rc.bottom - contentTop;
+    HINSTANCE hInst = GetModuleHandleW(nullptr);
+    g_pageTuning = CreateWindowExW(0, L"RadTunePage", L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+                                   0, contentTop, rc.right, pageH, w, nullptr, hInst, nullptr);
+    g_pageLive   = CreateWindowExW(0, L"RadTunePage", L"", WS_CHILD | WS_CLIPSIBLINGS,
+                                   0, contentTop, rc.right, pageH, w, nullptr, hInst, nullptr);
+
+    // Everything below is positioned relative to its page, not the window.
+    HWND p = g_pageTuning;
+
     // ---- Group 1: GPU tuning ----
-    int gy = HEADER + 8 + TABH;
-    MkGroup(w, L" GPU tuning ", M, gy, GW, 368);
+    int gy = 6;
+    MkGroup(p, L" GPU tuning ", M, gy, GW, 368);
     int y = gy + 24;
-    MkLabel(w, L"Source", LBLX, y + 4, FLDX - LBLX - 8);
-    g_source = MkCombo(w, IDC_SOURCE, FLDX, y, 300, { L"Manual tuning  (-set)", L"Load profile  (-load)" });
+    MkLabel(p, L"Source", LBLX, y + 4, FLDX - LBLX - 8);
+    g_source = MkCombo(p, IDC_SOURCE, FLDX, y, 300, { L"Manual tuning  (-set)", L"Load profile  (-load)" });
     y += 32;
 
-    MkLabel(w, L"GPU index", LBLX, y + 4, FLDX - LBLX - 8);
-    g_gpu = MkEdit(w, IDC_GPU, FLDX, y, 60);
+    MkLabel(p, L"GPU index", LBLX, y + 4, FLDX - LBLX - 8);
+    g_gpu = MkEdit(p, IDC_GPU, FLDX, y, 60);
     SetWindowTextW(g_gpu, L"0");
-    MkButton(w, IDC_READ, L"Read from GPU", FLDX + 72, y - 1, 150, 26);
+    MkButton(p, IDC_READ, L"Read from GPU", FLDX + 72, y - 1, 150, 26);
     y += 34;
 
-    g_core    = LabeledEdit(w, L"Core max offset (MHz)", IDC_CORE,    y); y += 30;
-    g_coremin = LabeledEdit(w, L"Core min (MHz)",        IDC_COREMIN, y); y += 30;
-    g_volt    = LabeledEdit(w, L"Voltage offset (mV)", IDC_VOLT,    y); y += 30;
-    g_vram    = LabeledEdit(w, L"VRAM max (MHz)",      IDC_VRAM,    y); y += 30;
+    g_core    = LabeledEdit(p, L"Core max offset (MHz)", IDC_CORE,    y); y += 30;
+    g_coremin = LabeledEdit(p, L"Core min (MHz)",        IDC_COREMIN, y); y += 30;
+    g_volt    = LabeledEdit(p, L"Voltage offset (mV)",   IDC_VOLT,    y); y += 30;
+    g_vram    = LabeledEdit(p, L"VRAM max (MHz)",        IDC_VRAM,    y); y += 30;
 
-    MkLabel(w, L"VRAM mem timing", LBLX, y + 4, FLDX - LBLX - 8);
-    g_memtiming = MkCombo(w, IDC_MEMTIMING, FLDX, y, 200,
+    MkLabel(p, L"VRAM mem timing", LBLX, y + 4, FLDX - LBLX - 8);
+    g_memtiming = MkCombo(p, IDC_MEMTIMING, FLDX, y, 200,
         { L"Leave unchanged", L"default", L"fast", L"fast2", L"auto", L"level1", L"level2" });
     y += 32;
 
-    g_power   = LabeledEdit(w, L"Power limit (%)",     IDC_POWER,   y); y += 30;
+    g_power   = LabeledEdit(p, L"Power limit (%)", IDC_POWER, y); y += 30;
 
-    MkLabel(w, L"Zero RPM fan", LBLX, y + 4, FLDX - LBLX - 8);
-    g_zerorpm = MkCombo(w, IDC_ZERORPM, FLDX, y, 200, { L"Leave unchanged", L"Enable", L"Disable" });
+    MkLabel(p, L"Zero RPM fan", LBLX, y + 4, FLDX - LBLX - 8);
+    g_zerorpm = MkCombo(p, IDC_ZERORPM, FLDX, y, 200, { L"Leave unchanged", L"Enable", L"Disable" });
     y += 32;
 
-    MkLabel(w, L"Profile .xml", LBLX, y + 4, FLDX - LBLX - 8);
-    g_profile = MkEdit(w, IDC_PROFILE, FLDX, y, GW - (FLDX - M) - 120);
-    g_browse = MkButton(w, IDC_BROWSE, L"Browse...", M + GW - 104, y - 1, 88, 26);
+    MkLabel(p, L"Profile .xml", LBLX, y + 4, FLDX - LBLX - 8);
+    g_profile = MkEdit(p, IDC_PROFILE, FLDX, y, GW - (FLDX - M) - 120);
+    g_browse = MkButton(p, IDC_BROWSE, L"Browse...", M + GW - 104, y - 1, 88, 26);
 
     // ---- Apply button ----
     int by = gy + 368 + 10;
-    MkButton(w, IDC_APPLY, L"Apply now", M, by, 200, 32);
+    MkButton(p, IDC_APPLY, L"Apply now", M, by, 200, 32);
 
     // ---- Group 2: Automation ----
     int ay = by + 44;
-    MkGroup(w, L" Automation (Task Scheduler) ", M, ay, GW, 104);
+    MkGroup(p, L" Automation (Task Scheduler) ", M, ay, GW, 104);
     int ty = ay + 26;
-    MkLabel(w, L"Trigger", LBLX, ty + 4, 55);
-    g_trigger = MkCombo(w, IDC_TRIGGER, 92, ty, 110, { L"logon", L"startup", L"daily" });
-    MkLabel(w, L"Time (daily)", 224, ty + 4, 80);
-    g_time = MkEdit(w, IDC_TIME, 312, ty, 70);
+    MkLabel(p, L"Trigger", LBLX, ty + 4, 55);
+    g_trigger = MkCombo(p, IDC_TRIGGER, 92, ty, 110, { L"logon", L"startup", L"daily" });
+    MkLabel(p, L"Time (daily)", 224, ty + 4, 80);
+    g_time = MkEdit(p, IDC_TIME, 312, ty, 70);
     SetWindowTextW(g_time, L"09:00");
     ty += 36;
-    MkButton(w, IDC_SCHEDULE, L"Create schedule", LBLX,       ty, 170, 28);
-    MkButton(w, IDC_STATUS,   L"Show status",     LBLX + 182, ty, 140, 28);
-    MkButton(w, IDC_REMOVE,   L"Remove schedule", LBLX + 330, ty, 170, 28);
+    MkButton(p, IDC_SCHEDULE, L"Create schedule", LBLX,       ty, 170, 28);
+    MkButton(p, IDC_STATUS,   L"Show status",     LBLX + 182, ty, 140, 28);
+    MkButton(p, IDC_REMOVE,   L"Remove schedule", LBLX + 330, ty, 170, 28);
 
     // ---- Group 3: Output ----
     int oy = ay + 104 + 10;
-    MkGroup(w, L" Output ", M, oy, GW, rc.bottom - oy - M);
+    MkGroup(p, L" Output ", M, oy, GW, pageH - oy - M);
     g_output = Mk(L"EDIT", L"", WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
-                  WS_EX_CLIENTEDGE, LBLX, oy + 22, GW - 32, rc.bottom - oy - M - 32, w, IDC_OUTPUT, g_mono);
+                  WS_EX_CLIENTEDGE, LBLX, oy + 22, GW - 32, pageH - oy - M - 32, p, IDC_OUTPUT, g_mono);
 
-    // ---- Live tab (overlay page) ----
-    // An opaque child spanning the whole content region; hidden until the Live
-    // tab is selected, then shown on top to cover the tuning form. On-demand
-    // Refresh only (no polling) - meant to complement, not replace, a real
-    // monitoring overlay.
-    const int pageTop = HEADER + 8 + TABH;
-    const int pageH = rc.bottom - pageTop - M;
-    g_pageLive = CreateWindowExW(0, L"RadTunePage", L"", WS_CHILD,
-                                 M, pageTop, GW, pageH, w, nullptr,
-                                 GetModuleHandleW(nullptr), nullptr);
-    Mk(L"BUTTON", L"Refresh", WS_TABSTOP | BS_OWNERDRAW, 0, 0, 4, 160, 30,
-       g_pageLive, IDC_REFRESH, g_font);
+    // ---- Live page: on-demand telemetry (no polling) ----
+    MkGroup(g_pageLive, L" Live readings ", M, gy, GW, pageH - gy - M);
+    MkButton(g_pageLive, IDC_REFRESH, L"Refresh", LBLX, gy + 26, 160, 30);
     g_live = Mk(L"EDIT", L"", WS_VSCROLL | ES_MULTILINE | ES_READONLY,
-                WS_EX_CLIENTEDGE, 0, 42, GW, pageH - 46, g_pageLive, IDC_LIVE, g_mono);
-    SetWindowTextW(g_live, L"Click Refresh to read current GPU telemetry.");
+                WS_EX_CLIENTEDGE, LBLX, gy + 66, GW - 32, pageH - gy - M - 76,
+                g_pageLive, IDC_LIVE, g_mono);
+    SetWindowTextW(g_live, L"Click Refresh to read the GPU's current telemetry.");
 
     LoadSettings();
     UpdateSourceState();
@@ -625,18 +632,14 @@ void DrawButton(LPDRAWITEMSTRUCT dis) {
     }
 }
 
-// Window procedure for the Live overlay page. Its children (Refresh button,
-// readout) post their notifications here, not to the main window.
+// Window procedure for the two tab pages. Controls now live on a page, so their
+// notifications arrive here instead of at the main window - forward them up so
+// the single handler in WndProc keeps owning all the behaviour.
 LRESULT CALLBACK PageProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_COMMAND:
-        if (LOWORD(wp) == IDC_REFRESH) { OnRefresh(); return 0; }
-        break;
-    case WM_DRAWITEM: {
-        auto* dis = (LPDRAWITEMSTRUCT)lp;
-        if (dis->CtlType == ODT_BUTTON) { DrawButton(dis); return TRUE; }
-        break;
-    }
+    case WM_DRAWITEM:
+        return SendMessageW(GetParent(h), msg, wp, lp);
     }
     return DefWindowProcW(h, msg, wp, lp);
 }
@@ -672,9 +675,9 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_NOTIFY: {
         auto* nm = (LPNMHDR)lp;
         if (nm->idFrom == IDC_TABS && nm->code == TCN_SELCHANGE) {
-            const int sel = (int)SendMessageW(g_tabs, TCM_GETCURSEL, 0, 0);
-            ShowWindow(g_pageLive, sel == 1 ? SW_SHOW : SW_HIDE);
-            if (sel == 1) SetWindowPos(g_pageLive, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            const bool live = SendMessageW(g_tabs, TCM_GETCURSEL, 0, 0) == 1;
+            ShowWindow(g_pageLive,   live ? SW_SHOW : SW_HIDE);
+            ShowWindow(g_pageTuning, live ? SW_HIDE : SW_SHOW);
             return 0;
         }
         break;
@@ -688,6 +691,7 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         case IDC_STATUS:   StartRun(RUN_SHOW, L"-schedule status"); return 0;
         case IDC_REMOVE:   StartRun(RUN_SHOW, L"-schedule remove"); return 0;
         case IDC_BROWSE:   OnBrowse();   return 0;
+        case IDC_REFRESH:  OnRefresh();  return 0;
         }
         return 0;
     case WM_DESTROY:
@@ -726,7 +730,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nCmd) {
     RegisterClassExW(&pc);
 
     HWND hwnd = CreateWindowW(wc.lpszClassName, L"RadTune GUI",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
         CW_USEDEFAULT, CW_USEDEFAULT, 600, 872, nullptr, nullptr, hInst, nullptr);
     if (!hwnd) return 1;
 
