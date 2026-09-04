@@ -19,9 +19,14 @@ valid range for every tunable so values no longer have to be guessed.
   `GetCurrentGPUMetrics`, as machine-readable `key=value` lines. Only metrics the
   driver reports are emitted. This is where the *real* boost clock comes from,
   since the manual-tuning interface exposes only the offset, not the base clock.
-- **GUI "Live" tab** — a second tab next to "Tuning" with a Refresh button that
-  reads current telemetry on demand (`-monitor`) and shows it formatted. No
-  polling: it complements external monitoring overlays rather than replacing them.
+- **GUI "Live" tab** — a second tab next to "Tuning" showing the card's telemetry,
+  refreshed once a second. It streams from a single long-running
+  `-monitor watch=1000` process: ADLX init costs ~600 ms, so re-launching per
+  sample would have made "live" permanently half a second stale.
+- **`-gpus` verb** — machine-readable device list (`gpu0=NAME`), used by the GUI's
+  new GPU dropdown.
+- **`-monitor watch=<ms>`** — streaming mode. ADLX is initialised once and a
+  sample is printed every `<ms>`, each terminated by a blank line.
 
 - **`-list` shows the allowed range for each tunable** (`core`, `volt`, `vram`,
   `power`), read from ADLX. The core max is an offset, so its span was not
@@ -52,6 +57,21 @@ valid range for every tunable so values no longer have to be guessed.
 - **Clearer `-list` / GUI labels**: the GPU max clock is an offset, now shown as
   "Core max offset" (CLI) and "Core max offset (MHz)" (GUI); voltage is likewise
   labelled "Voltage offset".
+- **The GUI's memory-timing dropdown now lists only what the card supports.** It
+  was hardcoded with all six ADLX enum values, so it offered presets the GPU would
+  refuse — the same superset mistake the CLI already guards against. `-get` now
+  reports `memtimingsupported=` and the dropdown is built from it (an RX 9070 XT
+  shows just `default` and `fast`).
+- **GPU picker instead of a numeric index**, populated from `-gpus`.
+- **The GUI reads the card at startup.** If a GPU is found the form is filled
+  without pressing anything; "Read from GPU" stays for a manual re-read.
+- **Results are reported in a dialog, not a side panel.** The Output box is gone
+  (the window is ~150 px shorter); each operation shows a message box using the
+  CLI's exit code to pick an error or success icon. Reads stay silent unless they
+  fail — the values are visible in the fields.
+- **The ASCII banner is only printed to a terminal.** Piped output feeds the GUI,
+  scripts and the machine-readable verbs, where it was noise (and it used to end
+  up inside the GUI's dialogs).
 
 ### Fixed
 - **`-schedule` no longer blames elevation for every failure.** `schtasks`
