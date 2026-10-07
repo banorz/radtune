@@ -2,10 +2,17 @@ cmake_minimum_required(VERSION 3.10)
 
 # Single source of truth for the version. Passed to the code as RADTUNE_VERSION
 # so the banner and --usage text can never drift from the released tag again.
-project(RadTune VERSION 1.3.0)
+project(RadTune VERSION 1.4.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Sources are UTF-8. Without this MSVC reads them in the system code page, so a
+# literal like L"°C" showed up as "Â°C" in the GUI. C/C++ only: rc.exe would
+# reject the flag.
+if(MSVC)
+    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:/utf-8>")
+endif()
 
 # Paths to ADLX SDK
 set(ADLX_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/adlx_sdk")
@@ -59,4 +66,9 @@ if(WIN32)
     if(MSVC)
         set_target_properties(RadTuneGUI PROPERTIES LINK_FLAGS "/MANIFEST:NO")
     endif()
+
+    # RadTuneTask - windowless launcher the scheduled task runs, so a logon or
+    # startup task doesn't flash a console window (RadTune.exe is a console
+    # program). Runs RadTune.exe hidden and returns its exit code. No ADLX.
+    add_executable(RadTuneTask WIN32 src/TaskLauncher.cpp)
 endif()

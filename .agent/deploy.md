@@ -56,7 +56,7 @@ cmake .. -A x64            REM no -G -> newest VS; or -G "<generator>" when over
 cmake --build . --config Release
 ```
 
-Output: **`build/Release/RadTune.exe`** and **`RadTuneGUI.exe`**. Switching VS versions on an existing `build/` fails on the cached generator — delete `build/` and rerun.
+Output: **`build/Release/RadTune.exe`**, **`RadTuneGUI.exe`** and **`RadTuneTask.exe`**. Switching VS versions on an existing `build/` fails on the cached generator — delete `build/` and rerun. A running `RadTuneGUI.exe` locks its exe: close it first or the link fails with `LNK1104`.
 
 Manual equivalent:
 
@@ -76,4 +76,11 @@ ADLX **write** operations (`-set`, `-load`) and creating the scheduled task (`-s
 
 ## Distribution
 
-Ship just `RadTune.exe`. No DLLs to bundle: ADLX is resolved from the installed AMD driver at runtime (`WinAPIs.cpp` does the dynamic load). There is currently no CI, code signing, or installer.
+No DLLs to bundle: ADLX is resolved from the installed AMD driver at runtime (`WinAPIs.cpp` does the dynamic load). There is currently no CI, code signing, or installer.
+
+The three exes **must stay in one folder**: the GUI looks for `RadTune.exe` next to itself, and `-schedule` points the task at `RadTuneTask.exe` next to `RadTune.exe` (falling back to a console-flashing task without it). So the release ships a zip:
+
+1. Version is set in [CMakeLists.txt](../CMakeLists.txt) (`project(RadTune VERSION x.y.z)`); move the `[Unreleased]` CHANGELOG section under that version.
+2. Merge to `main`, then build **from `main`** with a clean `build/`.
+3. Zip `RadTune.exe`, `RadTuneGUI.exe`, `RadTuneTask.exe`, `README.md`, `CHANGELOG.md` as `RadTune-vX.Y.Z-win-x64.zip`.
+4. `git tag -a vX.Y.Z` + push, then `gh release create vX.Y.Z` with the zip (labelled *recommended*) plus the loose exes — the GUI's label must say it needs `RadTune.exe` alongside.

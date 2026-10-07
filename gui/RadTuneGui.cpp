@@ -26,15 +26,27 @@ namespace {
 // ---------------------------------------------------------------------------
 constexpr int M = 16;          // outer margin
 constexpr int HEADER = 58;     // header strip height
-constexpr int TABH = 28;       // tab strip height (Tuning | Live)
+constexpr int TABH = 28;       // tab strip height (Tuning | Fan | Live)
 constexpr int LBLX = 32, FLDX = 196, FLDW = 150, EDH = 24;
+// Content area below the tab strip: the settings pages (Tuning / Fan), then the
+// shared action bar. The window is sized FROM these with AdjustWindowRect, so the
+// layout can't silently overflow or leave a gap after a change.
+constexpr int CONTENT_TOP = HEADER + 4 + TABH;
+constexpr int SETTINGS_H  = 352;
+constexpr int ACTIONS_H   = 196;
+constexpr int CLIENT_W    = 584;
+constexpr int CLIENT_H    = CONTENT_TOP + SETTINGS_H + ACTIONS_H;
 
 enum : int {
     IDC_SOURCE = 1001, IDC_GPU, IDC_READ, IDC_CORE, IDC_COREMIN, IDC_VOLT,
     IDC_VRAM, IDC_MEMTIMING, IDC_POWER, IDC_ZERORPM, IDC_PROFILE, IDC_BROWSE, IDC_APPLY,
     IDC_TRIGGER, IDC_TIME, IDC_SCHEDULE, IDC_STATUS, IDC_REMOVE, IDC_OUTPUT,
-    IDC_TABS, IDC_REFRESH, IDC_LIVE
+    IDC_TABS, IDC_REFRESH, IDC_LIVE,
+    IDC_FANMIN, IDC_FANTARGET, IDC_ACOUSTIC,
+    IDC_CURVE   // fan curve edits: IDC_CURVE + i (temperature), IDC_CURVE + 5 + i (speed)
 };
+
+constexpr int CURVE_POINTS = 5;   // ADLX manual fan curve: 5 (temperature, speed) points
 
 HFONT g_font = nullptr, g_mono = nullptr, g_title = nullptr, g_sub = nullptr;
 HWND g_source, g_gpu, g_core, g_coremin, g_volt, g_vram, g_memtiming, g_power, g_zerorpm,
@@ -44,7 +56,20 @@ HWND g_source, g_gpu, g_core, g_coremin, g_volt, g_vram, g_memtiming, g_power, g
 // windows (the first attempt) repaint over each other, so the Live page showed
 // through the tuning form - containers avoid the problem entirely.
 HWND g_main = nullptr;   // main window; owner of the result dialogs
-HWND g_tabs, g_pageTuning, g_pageLive, g_live;
+// Pages: Tuning and Fan hold settings; the action bar below them (Apply,
+// Automation, status) is shared, so Apply and a schedule always cover BOTH -
+// a fan curve that isn't in the logon task wouldn't survive a reboot.
+HWND g_tabs, g_pageTuning, g_pageFan, g_actions, g_pageLive, g_live;
+HWND g_fanmin, g_fantarget, g_acoustic, g_curveT[CURVE_POINTS], g_curveS[CURVE_POINTS];
+// Core max and voltage are offsets on RDNA4 but absolute values on RDNA2/3, so
+// their labels are set from -get's coremode= / voltmode= rather than fixed.
+HWND g_coreLabel, g_voltLabel;
+
+// Settings the card may not have. -get prints a key only when the GPU supports
+// it; a missing key clears and disables the field (an RX 9060/9070 XT has no
+// core min, and RDNA4 exposes only the fan curve - issue #10).
+bool g_hasCoreMin = true, g_hasFanMin = true, g_hasFanTarget = true,
+     g_hasAcoustic = true, g_hasCurve = true;
 
 // memtiming combo index -> RadTune token. Index 0 is always "Leave unchanged"
 // (empty token). The rest is filled from the card's OWN supported list, which
@@ -217,8 +242,17 @@ HWND LabeledEdit(HWND p, const wchar_t* label, int id, int y, int w = FLDW) {
 // ---------------------------------------------------------------------------
 void UpdateSourceState() {
     const bool profile = ComboSel(g_source) == 1;
-    for (HWND h : { g_core, g_coremin, g_volt, g_vram, g_memtiming, g_power, g_zerorpm })
-        EnableWindow(h, !profile);
+    const bool manual = !profile;   // -load ignores the manual fields entirely
+    for (HWND h : { g_core, g_volt, g_vram, g_memtiming, g_power, g_zerorpm })
+        EnableWindow(h, manual);
+    EnableWindow(g_coremin,   manual && g_hasCoreMin);
+    EnableWindow(g_fanmin,    manual && g_hasFanMin);
+    EnableWindow(g_fantarget, manual && g_hasFanTarget);
+    EnableWindow(g_acoustic,  manual && g_hasAcoustic);
+    for (int i = 0; i < CURVE_POINTS; ++i) {
+        EnableWindow(g_curveT[i], manual && g_hasCurve);
+        EnableWindow(g_curveS[i], manual && g_hasCurve);
+    }
     EnableWindow(g_profile, profile);
     EnableWindow(g_browse, profile);
 }
@@ -251,6 +285,22 @@ std::wstring BuildPayload(std::wstring& err) {
     const int zr = ComboSel(g_zerorpm);   // 0 leave, 1 enable, 2 disable
     if (zr == 1) tail += L" zerorpm=1";
     else if (zr == 2) tail += L" zerorpm=0";
+    add(g_fanmin, L"fanmin"); add(g_fantarget, L"fantarget"); add(g_acoustic, L"acoustic");
+
+    // Fan curve: all points or none. A half-filled curve has no sensible meaning.
+    std::wstring curve;
+    int filled = 0;
+    for (int i = 0; i < CURVE_POINTS; ++i) {
+        const std::wstring t = Trim(GetText(g_curveT[i])), s = Trim(GetText(g_curveS[i]));
+        filled += !t.empty() + !s.empty();
+        curve += (i ? L"," : L"") + t + L":" + s;
+    }
+    if (filled == 2 * CURVE_POINTS) {
+        tail += L" fancurve=" + curve;
+    } else if (filled > 0) {
+        err = L"Fill in every fan curve point (temperature and speed), or clear them all to leave the curve unchanged.";
+        return L"";
+    }
     if (tail.empty()) { err = L"Enter at least one tuning value."; return L""; }
     std::wstring s = L"-set";
     if (!gpu.empty()) s += L" gpu=" + gpu;
@@ -325,9 +375,9 @@ DWORD WINAPI RunWorker(LPVOID p) {
 }
 
 void SetActionsEnabled(bool on) {
-    // The action buttons live on the tuning page; Refresh lives on the Live page.
-    for (int id : { IDC_READ, IDC_APPLY, IDC_SCHEDULE, IDC_STATUS, IDC_REMOVE })
-        EnableWindow(GetDlgItem(g_pageTuning, id), on);
+    EnableWindow(GetDlgItem(g_pageTuning, IDC_READ), on);
+    for (int id : { IDC_APPLY, IDC_SCHEDULE, IDC_STATUS, IDC_REMOVE })
+        EnableWindow(GetDlgItem(g_actions, id), on);
 }
 
 // Launches "RadTune.exe <args>" on a worker thread; the result comes back via
@@ -359,7 +409,8 @@ bool ParseGetOutput(const std::string& raw) {
     // memtiming needs both lines before we can act: the supported list defines
     // the dropdown, the current value picks the entry. They arrive in order but
     // we collect and apply them after the loop rather than rely on it.
-    std::wstring mtCurrent, mtSupported;
+    std::wstring mtCurrent, mtSupported, curve;
+    bool seenCoreMin = false, seenFanMin = false, seenFanTarget = false, seenAcoustic = false;
     size_t pos = 0;
     while (pos < clean.size()) {
         size_t nl = clean.find("\r\n", pos);
@@ -371,15 +422,53 @@ bool ParseGetOutput(const std::string& raw) {
         const std::wstring v = Trim(AcpToWide(line.substr(eq + 1)));
         bool known = true;
         if (key == "core") SetWindowTextW(g_core, v.c_str());
-        else if (key == "coremin") SetWindowTextW(g_coremin, v.c_str());
+        else if (key == "coremin")   { SetWindowTextW(g_coremin, v.c_str());   seenCoreMin = true; }
         else if (key == "volt") SetWindowTextW(g_volt, v.c_str());
         else if (key == "vram") SetWindowTextW(g_vram, v.c_str());
         else if (key == "power") SetWindowTextW(g_power, v.c_str());
         else if (key == "memtiming") mtCurrent = v;
         else if (key == "memtimingsupported") mtSupported = v;
         else if (key == "zerorpm") SetCombo(g_zerorpm, v == L"1" ? 1 : 2);
+        else if (key == "fanmin")    { SetWindowTextW(g_fanmin, v.c_str());    seenFanMin = true; }
+        else if (key == "fantarget") { SetWindowTextW(g_fantarget, v.c_str()); seenFanTarget = true; }
+        else if (key == "acoustic")  { SetWindowTextW(g_acoustic, v.c_str());  seenAcoustic = true; }
+        else if (key == "fancurve")  curve = v;
+        else if (key == "coremode")
+            SetWindowTextW(g_coreLabel, v == L"offset" ? L"Core max offset (MHz)" : L"Core max (MHz)");
+        else if (key == "voltmode")
+            SetWindowTextW(g_voltLabel, v == L"offset" ? L"Voltage offset (mV)" : L"Voltage (mV)");
         else known = false;
         if (known) got = true;
+    }
+
+    // The fan curve editor has CURVE_POINTS columns; a curve of any other shape
+    // can't be shown faithfully, so it counts as unsupported here.
+    std::vector<std::pair<std::wstring, std::wstring>> points;
+    for (size_t p = 0; !curve.empty() && p <= curve.size();) {
+        const size_t c = curve.find(L',', p);
+        const std::wstring pt = curve.substr(p, c == std::wstring::npos ? std::wstring::npos : c - p);
+        const size_t colon = pt.find(L':');
+        if (colon != std::wstring::npos) points.emplace_back(pt.substr(0, colon), pt.substr(colon + 1));
+        if (c == std::wstring::npos) break;
+        p = c + 1;
+    }
+    const bool curveOk = points.size() == CURVE_POINTS;
+    for (int i = 0; i < CURVE_POINTS; ++i) {
+        SetWindowTextW(g_curveT[i], curveOk ? points[i].first.c_str()  : L"");
+        SetWindowTextW(g_curveS[i], curveOk ? points[i].second.c_str() : L"");
+    }
+
+    // A key the card didn't report means the setting doesn't exist there: clear
+    // the field so a stale value can't be sent, and let UpdateSourceState
+    // disable it.
+    if (got) {
+        g_hasCoreMin = seenCoreMin;   g_hasFanMin = seenFanMin;  g_hasFanTarget = seenFanTarget;
+        g_hasAcoustic = seenAcoustic; g_hasCurve = curveOk;
+        if (!seenCoreMin)   SetWindowTextW(g_coremin, L"");
+        if (!seenFanMin)    SetWindowTextW(g_fanmin, L"");
+        if (!seenFanTarget) SetWindowTextW(g_fantarget, L"");
+        if (!seenAcoustic)  SetWindowTextW(g_acoustic, L"");
+        UpdateSourceState();
     }
 
     if (!mtSupported.empty()) {
@@ -624,27 +713,31 @@ void BuildUi(HWND w) {
     RECT rc; GetClientRect(w, &rc);
     const int GW = rc.right - 2 * M;   // group width
 
-    // ---- Tab strip: Tuning | Live ----
+    // ---- Tab strip: Tuning | Fan | Live ----
     g_tabs = Mk(L"SysTabControl32", L"", 0, 0, M, HEADER + 4, GW, TABH - 2, w, IDC_TABS, g_font);
     TCITEMW ti{}; ti.mask = TCIF_TEXT;
     ti.pszText = (LPWSTR)L"Tuning"; SendMessageW(g_tabs, TCM_INSERTITEMW, 0, (LPARAM)&ti);
-    ti.pszText = (LPWSTR)L"Live";   SendMessageW(g_tabs, TCM_INSERTITEMW, 1, (LPARAM)&ti);
+    ti.pszText = (LPWSTR)L"Fan";    SendMessageW(g_tabs, TCM_INSERTITEMW, 1, (LPARAM)&ti);
+    ti.pszText = (LPWSTR)L"Live";   SendMessageW(g_tabs, TCM_INSERTITEMW, 2, (LPARAM)&ti);
 
-    // ---- Two page containers, same rect; exactly one is ever visible ----
-    const int contentTop = HEADER + 4 + TABH;
-    const int pageH = rc.bottom - contentTop;
+    // ---- Containers. Tuning/Fan share the settings rect and sit above the
+    // shared action bar; Live spans both, since it has no settings to apply. ----
     HINSTANCE hInst = GetModuleHandleW(nullptr);
-    g_pageTuning = CreateWindowExW(0, L"RadTunePage", L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
-                                   0, contentTop, rc.right, pageH, w, nullptr, hInst, nullptr);
-    g_pageLive   = CreateWindowExW(0, L"RadTunePage", L"", WS_CHILD | WS_CLIPSIBLINGS,
-                                   0, contentTop, rc.right, pageH, w, nullptr, hInst, nullptr);
+    auto page = [&](int top, int height, bool visible) {
+        return CreateWindowExW(0, L"RadTunePage", L"", WS_CHILD | WS_CLIPSIBLINGS | (visible ? WS_VISIBLE : 0),
+                               0, top, rc.right, height, w, nullptr, hInst, nullptr);
+    };
+    g_pageTuning = page(CONTENT_TOP, SETTINGS_H, true);
+    g_pageFan    = page(CONTENT_TOP, SETTINGS_H, false);
+    g_actions    = page(CONTENT_TOP + SETTINGS_H, ACTIONS_H, true);
+    g_pageLive   = page(CONTENT_TOP, SETTINGS_H + ACTIONS_H, false);
 
-    // Everything below is positioned relative to its page, not the window.
+    // Everything below is positioned relative to its container, not the window.
     HWND p = g_pageTuning;
 
-    // ---- Group 1: GPU tuning ----
+    // ---- Tuning page ----
     int gy = 6;
-    MkGroup(p, L" GPU tuning ", M, gy, GW, 400);
+    MkGroup(p, L" GPU tuning ", M, gy, GW, 338);
     int y = gy + 24;
     MkLabel(p, L"Source", LBLX, y + 4, FLDX - LBLX - 8);
     g_source = MkCombo(p, IDC_SOURCE, FLDX, y, 300, { L"Manual tuning  (-set)", L"Load profile  (-load)" });
@@ -658,14 +751,16 @@ void BuildUi(HWND w) {
 
     // Device list is filled at startup from "-gpus"; the CLI takes the index.
     MkLabel(p, L"GPU", LBLX, y + 4, FLDX - LBLX - 8);
-    g_gpu = MkCombo(p, IDC_GPU, FLDX, y, 300, { });
-    y += 32;
-    MkButton(p, IDC_READ, L"Read from GPU", FLDX, y - 2, 150, 26);
+    g_gpu = MkCombo(p, IDC_GPU, FLDX, y, 230, { });
+    MkButton(p, IDC_READ, L"Read from GPU", FLDX + 238, y - 1, 120, 26);
     y += 32;
 
-    g_core    = LabeledEdit(p, L"Core max offset (MHz)", IDC_CORE,    y); y += 30;
-    g_coremin = LabeledEdit(p, L"Core min (MHz)",        IDC_COREMIN, y); y += 30;
-    g_volt    = LabeledEdit(p, L"Voltage offset (mV)",   IDC_VOLT,    y); y += 30;
+    // Neutral until -get says whether this card uses offsets (RDNA4) or absolutes.
+    g_coreLabel = MkLabel(p, L"Core max (MHz)", LBLX, y + 4, FLDX - LBLX - 8);
+    g_core      = MkEdit(p, IDC_CORE, FLDX, y, FLDW);                    y += 30;
+    g_coremin   = LabeledEdit(p, L"Core min (MHz)", IDC_COREMIN, y);    y += 30;
+    g_voltLabel = MkLabel(p, L"Voltage (mV)", LBLX, y + 4, FLDX - LBLX - 8);
+    g_volt      = MkEdit(p, IDC_VOLT, FLDX, y, FLDW);                    y += 30;
     g_vram    = LabeledEdit(p, L"VRAM max (MHz)",        IDC_VRAM,    y); y += 30;
 
     MkLabel(p, L"VRAM mem timing", LBLX, y + 4, FLDX - LBLX - 8);
@@ -674,38 +769,56 @@ void BuildUi(HWND w) {
     g_memtiming = MkCombo(p, IDC_MEMTIMING, FLDX, y, 200, { L"Leave unchanged" });
     y += 32;
 
-    g_power   = LabeledEdit(p, L"Power limit (%)", IDC_POWER, y); y += 30;
+    g_power   = LabeledEdit(p, L"Power limit (%)", IDC_POWER, y);
 
-    MkLabel(p, L"Zero RPM fan", LBLX, y + 4, FLDX - LBLX - 8);
-    g_zerorpm = MkCombo(p, IDC_ZERORPM, FLDX, y, 200, { L"Leave unchanged", L"Enable", L"Disable" });
+    // ---- Fan page. Every field but Zero RPM is enabled only if -get reported
+    // it: RDNA4 exposes just the curve; the SDK does not say which cards have the rest. ----
+    HWND f = g_pageFan;
+    MkGroup(f, L" Fan ", M, gy, GW, 256);
+    y = gy + 24;
+    MkLabel(f, L"Zero RPM", LBLX, y + 4, FLDX - LBLX - 8);
+    g_zerorpm = MkCombo(f, IDC_ZERORPM, FLDX, y, 200, { L"Leave unchanged", L"Enable", L"Disable" });
     y += 32;
+    g_fanmin    = LabeledEdit(f, L"Min fan speed (RPM)",    IDC_FANMIN,    y); y += 30;
+    g_fantarget = LabeledEdit(f, L"Target fan speed (RPM)", IDC_FANTARGET, y); y += 30;
+    g_acoustic  = LabeledEdit(f, L"Acoustic limit (MHz)",   IDC_ACOUSTIC,  y); y += 36;
 
-    // ---- Apply button ----
-    int by = gy + 400 + 10;
-    MkButton(p, IDC_APPLY, L"Apply now", M, by, 200, 32);
+    MkLabel(f, L"Curve temp (°C)", LBLX, y + 4, FLDX - LBLX - 8);
+    for (int i = 0; i < CURVE_POINTS; ++i)
+        g_curveT[i] = MkEdit(f, IDC_CURVE + i, FLDX + i * 60, y, 52);
+    y += 30;
+    MkLabel(f, L"Curve speed (%)", LBLX, y + 4, FLDX - LBLX - 8);
+    for (int i = 0; i < CURVE_POINTS; ++i)
+        g_curveS[i] = MkEdit(f, IDC_CURVE + CURVE_POINTS + i, FLDX + i * 60, y, 52);
+    y += 32;
+    Mk(L"STATIC", L"Five points, each a temperature and the fan speed to run at it. "
+                  L"Clear all ten boxes to leave the curve as it is.",
+       SS_LEFT, 0, LBLX, y, GW - 32, 32, f, -1, g_font);
 
-    // ---- Group 2: Automation ----
-    int ay = by + 44;
-    MkGroup(p, L" Automation (Task Scheduler) ", M, ay, GW, 104);
+    // ---- Shared action bar: applies / schedules Tuning AND Fan together ----
+    HWND a = g_actions;
+    MkButton(a, IDC_APPLY, L"Apply now", M, 0, 200, 32);
+    const int ay = 44;
+    MkGroup(a, L" Automation (Task Scheduler) ", M, ay, GW, 104);
     int ty = ay + 26;
-    MkLabel(p, L"Trigger", LBLX, ty + 4, 55);
-    g_trigger = MkCombo(p, IDC_TRIGGER, 92, ty, 110, { L"logon", L"startup", L"daily" });
-    MkLabel(p, L"Time (daily)", 224, ty + 4, 80);
-    g_time = MkEdit(p, IDC_TIME, 312, ty, 70);
+    MkLabel(a, L"Trigger", LBLX, ty + 4, 55);
+    g_trigger = MkCombo(a, IDC_TRIGGER, 92, ty, 110, { L"logon", L"startup", L"daily" });
+    MkLabel(a, L"Time (daily)", 224, ty + 4, 80);
+    g_time = MkEdit(a, IDC_TIME, 312, ty, 70);
     SetWindowTextW(g_time, L"09:00");
     ty += 36;
-    MkButton(p, IDC_SCHEDULE, L"Create schedule", LBLX,       ty, 170, 28);
-    MkButton(p, IDC_STATUS,   L"Show status",     LBLX + 182, ty, 140, 28);
-    MkButton(p, IDC_REMOVE,   L"Remove schedule", LBLX + 330, ty, 170, 28);
+    MkButton(a, IDC_SCHEDULE, L"Create schedule", LBLX,       ty, 170, 28);
+    MkButton(a, IDC_STATUS,   L"Show status",     LBLX + 182, ty, 140, 28);
+    MkButton(a, IDC_REMOVE,   L"Remove schedule", LBLX + 330, ty, 170, 28);
 
-    // ---- Status line (results are reported in a dialog, not a panel) ----
-    int oy = ay + 104 + 12;
-    g_status = Mk(L"STATIC", L"", SS_LEFT | SS_ENDELLIPSIS, 0, M, oy, GW, 20, p, IDC_OUTPUT, g_font);
+    // Status line (results are reported in a dialog, not a panel).
+    g_status = Mk(L"STATIC", L"", SS_LEFT | SS_ENDELLIPSIS, 0, M, ay + 104 + 12, GW, 20, a, IDC_OUTPUT, g_font);
 
     // ---- Live page: streams while the tab is open, no button ----
-    MkGroup(g_pageLive, L" Live readings ", M, gy, GW, pageH - gy - M);
+    const int liveH = SETTINGS_H + ACTIONS_H;
+    MkGroup(g_pageLive, L" Live readings ", M, gy, GW, liveH - gy - M);
     g_live = Mk(L"EDIT", L"", WS_VSCROLL | ES_MULTILINE | ES_READONLY,
-                WS_EX_CLIENTEDGE, LBLX, gy + 26, GW - 32, pageH - gy - M - 36,
+                WS_EX_CLIENTEDGE, LBLX, gy + 26, GW - 32, liveH - gy - M - 36,
                 g_pageLive, IDC_LIVE, g_mono);
 
     LoadSettings();
@@ -832,11 +945,13 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_NOTIFY: {
         auto* nm = (LPNMHDR)lp;
         if (nm->idFrom == IDC_TABS && nm->code == TCN_SELCHANGE) {
-            const bool live = SendMessageW(g_tabs, TCM_GETCURSEL, 0, 0) == 1;
-            ShowWindow(g_pageLive,   live ? SW_SHOW : SW_HIDE);
-            ShowWindow(g_pageTuning, live ? SW_HIDE : SW_SHOW);
-            // Only stream while the tab is actually on screen.
-            if (live) StartLive(); else StopLive();
+            const int sel = (int)SendMessageW(g_tabs, TCM_GETCURSEL, 0, 0);   // 0 Tuning, 1 Fan, 2 Live
+            ShowWindow(g_pageTuning, sel == 0 ? SW_SHOW : SW_HIDE);
+            ShowWindow(g_pageFan,    sel == 1 ? SW_SHOW : SW_HIDE);
+            ShowWindow(g_actions,    sel != 2 ? SW_SHOW : SW_HIDE);
+            ShowWindow(g_pageLive,   sel == 2 ? SW_SHOW : SW_HIDE);
+            // Only stream while the Live tab is actually on screen.
+            if (sel == 2) StartLive(); else StopLive();
             return 0;
         }
         break;
@@ -895,9 +1010,14 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nCmd) {
     pc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
     RegisterClassExW(&pc);
 
-    HWND hwnd = CreateWindowW(wc.lpszClassName, L"RadTune GUI",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
-        CW_USEDEFAULT, CW_USEDEFAULT, 600, 752, nullptr, nullptr, hInst, nullptr);
+    // Size the frame from the client area the layout needs, not the other way
+    // round: guessing the frame height is how the form used to overflow/gap.
+    const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+    RECT frame = { 0, 0, CLIENT_W, CLIENT_H };
+    AdjustWindowRect(&frame, style, FALSE);
+    HWND hwnd = CreateWindowW(wc.lpszClassName, L"RadTune GUI", style,
+        CW_USEDEFAULT, CW_USEDEFAULT, frame.right - frame.left, frame.bottom - frame.top,
+        nullptr, nullptr, hInst, nullptr);
     if (!hwnd) return 1;
 
     ShowWindow(hwnd, nCmd);

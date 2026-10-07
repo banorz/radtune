@@ -71,19 +71,43 @@ presets your card actually supports, so you don't have to guess values:
 You can combine multiple parameters in a single command.
 ```bash
 # Available parameters:
-# gpu=      (Index of the GPU, default 0)
-# core=     (Max GPU clock OFFSET in MHz - signed, 0 = stock. NOT an absolute clock)
-# coremin=  (Min GPU Frequency in MHz)
-# volt=     (GPU voltage OFFSET in mV - negative = undervolt)
-# vram=     (Max VRAM Frequency in MHz - absolute, not an offset)
-# memtiming=(VRAM memory timing preset: default|fast|fast2|auto|level1|level2)
-# power=    (Power Limit percentage, e.g. 15 for +15%)
-# zerorpm=  (0 to disable, 1 to enable)
+# gpu=       (Index of the GPU, default 0)
+# core=      (Max GPU clock in MHz - an OFFSET on RX 9000 / RDNA4, absolute on RX 6000/7000)
+# coremin=   (Min GPU Frequency in MHz - not available on RX 9000 / RDNA4)
+# volt=      (GPU voltage in mV - an OFFSET on RDNA4 (negative = undervolt), absolute on RDNA2/3)
+# vram=      (Max VRAM Frequency in MHz - absolute, not an offset)
+# memtiming= (VRAM memory timing preset: default|fast|fast2|auto|level1|level2)
+# power=     (Power Limit percentage, e.g. 15 for +15%)
+# zerorpm=   (0 to disable, 1 to enable)
+# fancurve=  (Fan curve: temperature C : fan speed %, comma separated, e.g. 30:15,50:32,62:49,74:66,83:100)
+# fanmin=    (Minimum fan speed in RPM)        - only on cards that expose it
+# fantarget= (Target fan speed in RPM)         - only on cards that expose it
+# acoustic=  (Minimum acoustic limit in MHz)   - only on cards that expose it
 
-RadTune.exe -set gpu=0 core=-100 coremin=2100 volt=-50 vram=2600 memtiming=fast power=10 zerorpm=1
+# RX 9000 (RDNA4): core and volt are offsets from the card's stock values
+RadTune.exe -set gpu=0 core=-100 volt=-50 vram=2600 memtiming=fast power=10 zerorpm=1
+# RX 6000 / 7000 (RDNA2/3): core and volt are absolute values
+RadTune.exe -set gpu=0 core=2500 coremin=2100 volt=1050 vram=2600 power=10
+# Fan curve (temperature C : fan speed %)
+RadTune.exe -set gpu=0 fancurve=30:20,50:35,62:50,74:70,83:100
 ```
+`-list` labels each value for your card (`Core max offset` / `Core max`), so you
+can see which kind of number it expects.
 Only the parameters you pass are touched; everything else is left alone.
-Run `-list` first to see the valid range for each one.
+Run `-list` first: it shows the valid range for each parameter and which ones
+your card supports at all. RX 9000 (RDNA4) cards, for example, have no minimum
+core clock and expose fan control only as a 5-point curve:
+```
+ [GFX]         Core min: n/a       Core max offset: 0 MHz     Voltage offset: -50 mV
+ [GFX range]   core=[-500 .. 1000] volt=[-200 .. 0]
+ [Fan]         Zero RPM: ON
+ [Fan curve]   fancurve=30:15,50:32,62:49,74:66,83:100   (C:%, 5 points, temp [25 .. 100] C, speed [15 .. 100] %)
+```
+
+Every value is **read back after it is written**. If the driver accepted a value
+but applied a different one, RadTune says so (`requested -500 MHz, but the driver
+applied -400 MHz`) instead of reporting success. A typo or an invalid value in
+the command line makes RadTune refuse the whole command, so nothing is half-applied.
 
 ### 2b. Live Telemetry
 Reads the *real* current values (the manual tuning above only exposes the
@@ -104,14 +128,14 @@ RadTune.exe -load "C:\path\to\performance_profile.xml" [gpu=N]
 Register RadTune to re-apply your tuning automatically — no manual Task Scheduler clicking. The task is created with **highest privileges** (required by ADLX) for you.
 
 ```bash
-# Re-apply manual settings at every logon
-RadTune.exe -schedule logon -set gpu=0 core=2500 volt=1050
+# Re-apply manual settings (fan curve included) at every logon
+RadTune.exe -schedule logon -set gpu=0 core=-100 volt=-50 fancurve=30:20,50:35,62:50,74:70,83:100
 
 # Apply a profile at system startup
 RadTune.exe -schedule startup -load "C:\path\to\profile.xml"
 
 # Apply every day at 09:00
-RadTune.exe -schedule daily=09:00 -set core=2500 power=15
+RadTune.exe -schedule daily=09:00 -set core=-100 power=10
 
 # Inspect or remove the scheduled task
 RadTune.exe -schedule status
@@ -120,14 +144,18 @@ RadTune.exe -schedule remove
 
 > Run the `-schedule` command **once from an elevated (Administrator) console** — creating a task that runs with highest privileges requires admin rights. After that, the task fires automatically with no further prompts.
 
+> The task runs **`RadTuneTask.exe`**, a tiny launcher that starts RadTune hidden, so no console window flashes at logon. Keep it in the same folder as `RadTune.exe` (it is in the release zip). Tasks created by older versions point at `RadTune.exe` directly — run `-schedule` again to get the windowless one.
+
 ### 5. GUI (RadTuneGUI.exe)
 Prefer not to type commands? `RadTuneGUI.exe` is a small native frontend for the CLI. It builds the same `-set` / `-load` / `-schedule` commands from a form and runs `RadTune.exe` for you, showing the output.
 
-- Keep `RadTuneGUI.exe` **next to** `RadTune.exe` (both land in `build/Release/`); the GUI looks for the CLI in its own folder.
+- Keep `RadTuneGUI.exe` **next to** `RadTune.exe` and `RadTuneTask.exe` (all three land in `build/Release/` and in the release zip); the GUI looks for the CLI in its own folder.
 - It requests administrator rights on launch, so the tuning it triggers has the privileges ADLX needs.
-- **Apply now** runs the tuning immediately; **Create schedule** registers the Task Scheduler entry with the chosen trigger (logon / startup / daily); **Show status** / **Remove schedule** manage it.
+- Three tabs: **Tuning** (clocks, voltage, VRAM, power), **Fan** (Zero RPM and the fan curve — plus min/target speed and acoustic limit on cards that have them) and **Live**.
+- **Apply now** and **Create schedule** sit under both Tuning and Fan and always cover **both** pages, so a scheduled task restores your fan curve too. **Show status** / **Remove schedule** manage the task.
 - It **reads the card at startup** — the form shows the GPU's real values without pressing anything. **Read from GPU** re-reads on demand.
-- The **GPU dropdown** lists your actual cards; the **VRAM mem timing** dropdown lists only the presets *your* card supports.
+- Fields your card doesn't support are **disabled** (e.g. Core min on RX 9000). The **GPU dropdown** lists your actual cards; the **VRAM mem timing** dropdown lists only the presets *your* card supports.
+- The fan curve is five points (temperature °C → fan speed %). Fill all ten boxes to change it, or clear them all to leave it as it is.
 - The **Live** tab shows telemetry refreshed once a second (streamed from a single `RadTune -monitor watch=1000` process, started when you open the tab and stopped when you leave it).
 - Results appear in a **dialog**, with an error icon when something was rejected.
 - The form **remembers your last settings** between runs (stored under `HKCU\Software\RadTune`).
@@ -170,8 +198,8 @@ The recommended way is the one-line `-schedule` command documented above — it 
 1. Open **Task Scheduler** and click **Create Basic Task**.
 2. **Trigger**: Select "When I log on".
 3. **Action**: Select "Start a program".
-4. **Program/script**: Path to `RadTune.exe`.
-5. **Add arguments**: `-set gpu=0 core=2500 volt=1100 ...` (or `-load "your_profile.xml"`).
+4. **Program/script**: Path to `RadTuneTask.exe` (runs RadTune without a console window; `RadTune.exe` works too but flashes one).
+5. **Add arguments**: `-set gpu=0 core=-100 volt=-50 ...` (or `-load "your_profile.xml"`).
 6. **Finish**: In the task properties, ensure **"Run with highest privileges"** is checked (required for ADLX tuning).
 
 ---
