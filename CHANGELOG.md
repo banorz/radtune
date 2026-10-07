@@ -3,6 +3,51 @@
 All notable changes to RadTune are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-10-07
+
+Fan control, a scheduled task that no longer flashes a console window, and
+read-back of every setting so a value the driver quietly changed is reported.
+
+### Added
+- **Fan control.** `fancurve=` sets the fan curve as `temperature:speed` points
+  (°C : %), e.g. `fancurve=30:15,50:32,62:49,74:66,83:100`; `fanmin=` (RPM),
+  `fantarget=` (RPM) and `acoustic=` (MHz) cover cards that expose them. Each
+  feature is checked against the card's own support flag and range, and `-list`
+  shows what is available — RDNA4 (RX 9000) offers only the 5-point curve and
+  Zero RPM. Requested in #1.
+- **GUI "Fan" tab** with Zero RPM, a 5-point curve editor and the per-card
+  settings above. Apply and the schedule controls now sit in a bar shared by the
+  Tuning and Fan tabs and always carry both, so a scheduled task restores the fan
+  curve too.
+- **`RadTuneTask.exe`**, a windowless launcher that scheduled tasks now run, so no
+  console window flashes at logon/startup (#5). It runs RadTune hidden and passes
+  its exit code back to Task Scheduler. Re-run `-schedule` to upgrade an existing
+  task.
+
+### Changed
+- **Every write is read back.** If the driver accepts a value but applies another
+  one, RadTune reports `requested X, but the driver applied Y` and exits 1 instead
+  of claiming success. Seen on an RX 9060 XT, where a −500 MHz core offset — within
+  the range the card advertises — is applied as −400 (#11).
+- **`-set` validates its arguments before touching the GPU.** An unknown argument
+  (a typo was silently ignored) or a non-numeric value (which used to crash the
+  run) now prints an error and nothing is applied.
+- The GUI window is sized from its layout (`AdjustWindowRect`) and is shorter than
+  before despite the new tab.
+- **Core max and voltage are labelled for what they are on each card.** Since
+  RDNA4 they are offsets from the base values; on RDNA2/3 they are absolute MHz /
+  mV. 1.3.0 labelled them "offset" everywhere; the label is now chosen from the
+  card's own range (an offset range contains 0), in `-list`, in `-set` messages
+  and in the GUI. `-get` reports it as `coremode=` / `voltmode=`.
+
+### Fixed
+- **Core min on cards without a minimum clock** (RX 9060 XT / 9070 XT, #10).
+  `-list` shows `n/a`, `-get` omits it, the GUI disables the field, and
+  `-set coremin=` explains that the card has no minimum core clock instead of
+  failing with a raw driver error.
+- **Non-ASCII text in the GUI.** Sources are now compiled as UTF-8 (`/utf-8`);
+  the fan curve's "°C" label rendered as "Â°C".
+
 ## [1.3.0] - 2026-09-04
 
 Tuning correctness & visibility release. RadTune gains VRAM memory timing

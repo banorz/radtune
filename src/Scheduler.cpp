@@ -61,6 +61,19 @@ std::string GetExePath() {
     return std::string(buf);
 }
 
+// What the task should run. RadTune.exe is a console program, so started
+// directly by Task Scheduler it flashes a console window at every run (issue
+// #5). When RadTuneTask.exe - a windowless launcher that runs RadTune.exe hidden
+// and returns its exit code - sits next to us, the task runs that instead.
+std::string TaskCommandPath(bool& windowless) {
+    const std::string exe = GetExePath();
+    const size_t slash = exe.find_last_of("\\/");
+    const std::string launcher =
+        (slash == std::string::npos ? std::string() : exe.substr(0, slash + 1)) + "RadTuneTask.exe";
+    windowless = GetFileAttributesA(launcher.c_str()) != INVALID_FILE_ATTRIBUTES;
+    return windowless ? launcher : exe;
+}
+
 std::string TempXmlPath() {
     char tmp[MAX_PATH] = { 0 };
     GetTempPathA(MAX_PATH, tmp);
@@ -182,7 +195,13 @@ bool Install(const std::string& trigger, const std::vector<std::string>& payload
     if (!BuildTriggerXml(trigger, triggerXml, error))
         return false;
 
-    const std::string xml = BuildTaskXml(triggerXml, GetExePath(), JoinPayload(payload));
+    bool windowless = false;
+    const std::string command = TaskCommandPath(windowless);
+    if (!windowless)
+        std::cout << "[i] RadTuneTask.exe not found next to RadTune.exe - the task will flash a "
+                     "console window each time it runs. Keep the files from the release zip together."
+                  << std::endl;
+    const std::string xml = BuildTaskXml(triggerXml, command, JoinPayload(payload));
     const std::string xmlPath = TempXmlPath();
     {
         std::ofstream f(xmlPath, std::ios::binary | std::ios::trunc);

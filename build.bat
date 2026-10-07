@@ -38,5 +38,5 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b %ERRORLEVEL%
 )
 
-echo [+] Build successful! Output: %BUILD_DIR%\Release\RadTune.exe and RadTuneGUI.exe
+echo [+] Build successful! Output: %BUILD_DIR%\Release\RadTune.exe, RadTuneGUI.exe and RadTuneTask.exe
 endlocal

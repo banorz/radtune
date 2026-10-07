@@ -12,6 +12,7 @@
 #include <optional>
 #include <thread>
 #include <chrono>
+#include <functional>
 #include <io.h>
 #include <cstdio>
 
@@ -96,19 +97,6 @@ struct ApplyResult {
     int failed  = 0;
 };
 
-// Reports one setting's outcome and tallies it. Every Set* call goes through
-// this, so a driver rejection can no longer be mistaken for success.
-void Report(ApplyResult& r, ADLX_RESULT res, const std::string& what, const std::string& value) {
-    if (ADLX_SUCCEEDED(res)) {
-        std::cout << " -> " << what << ": " << value << std::endl;
-        ++r.applied;
-    } else {
-        std::cerr << " [!] Failed to set " << what << ": " << value
-                  << " (Error: " << res << ")" << std::endl;
-        ++r.failed;
-    }
-}
-
 // Reports a setting rejected before we even called ADLX (unsupported feature or
 // preset). Counts as a failure so the exit code reflects it.
 void ReportRejected(ApplyResult& r, const std::string& message) {
@@ -134,6 +122,157 @@ bool InRange(ApplyResult& r, ADLX_RESULT rangeRes, const ADLX_IntRange& range,
                       + RangeText(range) + " for this GPU.");
     return false;
 }
+
+using Fmt      = std::function<std::string(int)>;
+using ReadBack = std::function<ADLX_RESULT(adlx_int*)>;
+
+Fmt WithUnit(const std::string& unit, bool showSign = false) {
+    return [unit, showSign](int v) {
+        return std::string(showSign && v >= 0 ? "+" : "") + std::to_string(v) + unit;
+    };
+}
+
+// Reports a Set* outcome, trusting the value read back over the return code.
+// ADLX can answer OK and still apply something else: on an RX 9060 XT a -500 MHz
+// core offset - inside the range the card itself advertises - lands as -400
+// (issue #11). So after a successful write the setting is read back, and a
+// mismatch is reported (and counted as a failure) instead of claiming success.
+// If the read-back itself fails we fall back to trusting the write.
+void ReportVerified(ApplyResult& r, const std::string& what, int requested, const Fmt& fmt,
+                    ADLX_RESULT setRes, const ReadBack& readBack) {
+    if (ADLX_FAILED(setRes)) {
+        std::cerr << " [!] Failed to set " << what << ": " << fmt(requested)
+                  << " (Error: " << setRes << ")" << std::endl;
+        ++r.failed;
+        return;
+    }
+    adlx_int actual = 0;
+    if (readBack && ADLX_SUCCEEDED(readBack(&actual)) && actual != requested) {
+        std::cerr << " [!] " << what << ": requested " << fmt(requested)
+                  << ", but the driver applied " << fmt(actual) << "." << std::endl;
+        ++r.failed;
+        return;
+    }
+    std::cout << " -> " << what << ": " << fmt(requested) << std::endl;
+    ++r.applied;
+}
+
+// Core min has no IsSupported gate in ADLX. Cards that expose no minimum clock
+// (RX 9060 XT and 9070 XT; Adrenalin shows none there either) answer with an
+// unreadable range, so that is what "not supported" means here (issue #10).
+bool CoreMinSupported(IADLXManualGraphicsTuning2Ptr gfx2) {
+    ADLX_IntRange rg{};
+    return gfx2 && ADLX_SUCCEEDED(gfx2->GetGPUMinFrequencyRange(&rg));
+}
+
+// From Navi4 (RDNA4) on, the max clock and the voltage are OFFSETS from the
+// card's base values; on RDNA2/3 they are absolute MHz / mV (ADLX: "Start from
+// Navi4+, the maximum frequency is an offset"). ADLX has no flag for it, so we
+// read it off the range: an offset range always contains 0 (= stock), while an
+// absolute clock or voltage range never does.
+bool IsOffsetRange(const ADLX_IntRange& r) { return r.minValue <= 0 && r.maxValue >= 0; }
+
+// Labels for the two settings whose meaning depends on the generation. Unknown
+// (range unreadable) gets the neutral name.
+std::string CoreMaxLabel(bool known, const ADLX_IntRange& r) {
+    return known && IsOffsetRange(r) ? "Core max offset" : "Core max";
+}
+std::string VoltageLabel(bool known, const ADLX_IntRange& r) {
+    return known && IsOffsetRange(r) ? "Voltage offset" : "Voltage";
+}
+
+// --- Fan tuning -------------------------------------------------------------
+using FanCurve = std::vector<std::pair<int, int>>;   // (temperature C, speed %)
+
+// Reads the card's current fan curve. False if the curve can't be read.
+bool ReadFanCurve(IADLXManualFanTuningPtr fan, FanCurve& out) {
+    out.clear();
+    IADLXManualFanTuningStateListPtr states;
+    if (!fan || ADLX_FAILED(fan->GetFanTuningStates(&states)) || !states) return false;
+    for (adlx_uint i = 0; i < states->Size(); ++i) {
+        IADLXManualFanTuningStatePtr s;
+        adlx_int t = 0, sp = 0;
+        if (ADLX_FAILED(states->At(i, &s)) || !s ||
+            ADLX_FAILED(s->GetTemperature(&t)) || ADLX_FAILED(s->GetFanSpeed(&sp)))
+            return false;
+        out.emplace_back(t, sp);
+    }
+    return !out.empty();
+}
+
+// "40:20,55:35,..." - the format fancurve= takes and -get prints.
+std::string FanCurveText(const FanCurve& c) {
+    std::string s;
+    for (size_t i = 0; i < c.size(); ++i) {
+        if (i) s += ",";
+        s += std::to_string(c[i].first) + ":" + std::to_string(c[i].second);
+    }
+    return s;
+}
+
+bool ParseFanCurve(const std::string& text, FanCurve& out) {
+    out.clear();
+    size_t p = 0;
+    while (true) {
+        const size_t comma = text.find(',', p);
+        const std::string pt = text.substr(p, comma == std::string::npos ? std::string::npos : comma - p);
+        const size_t colon = pt.find(':');
+        if (colon == std::string::npos) return false;
+        try {
+            size_t used = 0;
+            const std::string ts = pt.substr(0, colon), ss = pt.substr(colon + 1);
+            const int t = std::stoi(ts, &used);
+            if (used != ts.size()) return false;
+            const int sp = std::stoi(ss, &used);
+            if (used != ss.size()) return false;
+            out.emplace_back(t, sp);
+        } catch (...) {
+            return false;
+        }
+        if (comma == std::string::npos) break;
+        p = comma + 1;
+    }
+    return !out.empty();
+}
+
+// What this card's manual fan tuning supports. Each feature has its own gate in
+// ADLX and RDNA generations differ, so nothing is assumed - the CLI rejects, and
+// the GUI disables, whatever isn't here.
+struct FanCaps {
+    bool minSpeed = false, target = false, acoustic = false, curve = false;
+    ADLX_IntRange minSpeedRange{}, targetRange{}, acousticRange{}, curveSpeed{}, curveTemp{};
+    size_t curvePoints = 0;
+};
+
+FanCaps ProbeFan(IADLXManualFanTuningPtr fan) {
+    FanCaps c;
+    if (!fan) return c;
+    adlx_bool s = false;
+    c.minSpeed = ADLX_SUCCEEDED(fan->IsSupportedMinFanSpeed(&s)) && s &&
+                 ADLX_SUCCEEDED(fan->GetMinFanSpeedRange(&c.minSpeedRange));
+    s = false;
+    c.target   = ADLX_SUCCEEDED(fan->IsSupportedTargetFanSpeed(&s)) && s &&
+                 ADLX_SUCCEEDED(fan->GetTargetFanSpeedRange(&c.targetRange));
+    s = false;
+    c.acoustic = ADLX_SUCCEEDED(fan->IsSupportedMinAcousticLimit(&s)) && s &&
+                 ADLX_SUCCEEDED(fan->GetMinAcousticLimitRange(&c.acousticRange));
+    // The curve has no IsSupported gate: it is usable when both its ranges and
+    // its current points can be read.
+    FanCurve cur;
+    c.curve = ADLX_SUCCEEDED(fan->GetFanTuningRanges(&c.curveSpeed, &c.curveTemp)) &&
+              ReadFanCurve(fan, cur);
+    c.curvePoints = cur.size();
+    return c;
+}
+
+// Everything one -set / -load run may ask for. An empty optional means "leave it
+// alone", a present one "apply exactly this value" - so every number is legal,
+// including negative offsets and 0, and partial requests are the normal case.
+struct TuningRequest {
+    std::optional<int> coreMax, coreMin, voltage, vramMax, memTiming, powerLimit, zeroRPM;
+    std::optional<int> fanMin, fanTarget, acoustic;
+    std::optional<FanCurve> fanCurve;
+};
 
 #include "ProfileParser.h"
 #include "Scheduler.h"
@@ -211,22 +350,25 @@ void ShowGPUSettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices) 
         tuningServices->GetManualGFXTuning(gpu, &manualGFXIfc);
         IADLXManualGraphicsTuning2Ptr gfx2(manualGFXIfc);
         if (gfx2) {
-            adlx_int minFreq, maxFreq, voltage;
-            gfx2->GetGPUMinFrequency(&minFreq);
-            gfx2->GetGPUMaxFrequency(&maxFreq);
-            gfx2->GetGPUVoltage(&voltage);
-            std::cout << std::left << std::setw(15) << " [GFX]"
-                      << "Core min: " << std::setw(10) << (std::to_string(minFreq) + " MHz")
-                      << "Core max offset: " << std::setw(10) << (std::to_string(maxFreq) + " MHz")
-                      << "Voltage offset: " << (std::to_string(voltage) + " mV") << std::endl;
-
-            // Allowed ranges, so the user doesn't have to discover the card's
-            // limits by trial and error - especially since the core max is an
-            // offset and its span is not guessable.
+            // Ranges first: they say whether core max / voltage are offsets
+            // (RDNA4) or absolute values (RDNA2/3), which picks the labels.
             ADLX_IntRange rMin{}, rMax{}, rVolt{};
             const bool okMin  = ADLX_SUCCEEDED(gfx2->GetGPUMinFrequencyRange(&rMin));
             const bool okMax  = ADLX_SUCCEEDED(gfx2->GetGPUMaxFrequencyRange(&rMax));
             const bool okVolt = ADLX_SUCCEEDED(gfx2->GetGPUVoltageRange(&rVolt));
+
+            adlx_int minFreq = 0, maxFreq = 0, voltage = 0;
+            const bool hasMin = okMin && ADLX_SUCCEEDED(gfx2->GetGPUMinFrequency(&minFreq));
+            gfx2->GetGPUMaxFrequency(&maxFreq);
+            gfx2->GetGPUVoltage(&voltage);
+            std::cout << std::left << std::setw(15) << " [GFX]"
+                      << "Core min: " << std::setw(10) << (hasMin ? std::to_string(minFreq) + " MHz" : "n/a")
+                      << CoreMaxLabel(okMax, rMax) << ": " << std::setw(10) << (std::to_string(maxFreq) + " MHz")
+                      << VoltageLabel(okVolt, rVolt) << ": " << (std::to_string(voltage) + " mV") << std::endl;
+
+            // Allowed ranges, so the user doesn't have to discover the card's
+            // limits by trial and error - especially when core max is an offset
+            // and its span is not guessable.
             if (okMin || okMax || okVolt) {
                 std::cout << std::left << std::setw(15) << " [GFX range]";
                 if (okMin)  std::cout << "coremin=" << std::setw(15) << RangeText(rMin);
@@ -295,13 +437,34 @@ void ShowGPUSettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices) 
         IADLXInterfacePtr fanIfc;
         tuningServices->GetManualFanTuning(gpu, &fanIfc);
         IADLXManualFanTuningPtr fan(fanIfc);
-        adlx_bool zeroRPM;
-        fan->GetZeroRPMState(&zeroRPM);
-        adlx_int minFan;
-        fan->GetMinFanSpeed(&minFan);
-        std::cout << std::left << std::setw(15) << " [Fan]" 
-                  << "Zero RPM: " << (zeroRPM ? "\033[1;32mON\033[0m" : "\033[1;31mOFF\033[0m") 
-                  << "  Min Speed: " << minFan << " RPM" << std::endl;
+        if (fan) {
+            const FanCaps fc = ProbeFan(fan);
+            adlx_bool zeroRPM = false;
+            fan->GetZeroRPMState(&zeroRPM);
+            std::cout << std::left << std::setw(15) << " [Fan]"
+                      << "Zero RPM: " << (zeroRPM ? "\033[1;32mON\033[0m" : "\033[1;31mOFF\033[0m") << std::endl;
+
+            // One line per supported feature: label, current value, key=range.
+            auto row = [](const char* label, const std::string& value, const char* key,
+                          const ADLX_IntRange& rg) {
+                std::cout << std::left << std::setw(15) << "" << std::setw(16) << label
+                          << std::setw(12) << value << key << "=" << RangeText(rg) << std::endl;
+            };
+            adlx_int v = 0;
+            if (fc.minSpeed && ADLX_SUCCEEDED(fan->GetMinFanSpeed(&v)))
+                row("Min speed:", std::to_string(v) + " RPM", "fanmin", fc.minSpeedRange);
+            if (fc.target && ADLX_SUCCEEDED(fan->GetTargetFanSpeed(&v)))
+                row("Target speed:", std::to_string(v) + " RPM", "fantarget", fc.targetRange);
+            if (fc.acoustic && ADLX_SUCCEEDED(fan->GetMinAcousticLimit(&v)))
+                row("Acoustic limit:", std::to_string(v) + " MHz", "acoustic", fc.acousticRange);
+
+            FanCurve cur;
+            if (fc.curve && ReadFanCurve(fan, cur))
+                std::cout << std::left << std::setw(15) << " [Fan curve]"
+                          << "fancurve=" << FanCurveText(cur) << "   (C:%, " << fc.curvePoints
+                          << " points, temp " << RangeText(fc.curveTemp)
+                          << " C, speed " << RangeText(fc.curveSpeed) << " %)" << std::endl;
+        }
     }
 
     // 4. Power Tuning
@@ -324,15 +487,70 @@ void ShowGPUSettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices) 
 }
 
 
-// Each tuning parameter is an optional: an empty optional means "the caller did
-// not ask to change this, leave it alone", a present one means "apply exactly
-// this value". This separates "was it requested" from "what is the value", so
-// every number is legal - including negative core/voltage offsets (RDNA4) and 0.
+// Fan curve: the card has a fixed number of points (temperature C -> speed %).
+// We fill the driver's own empty state list rather than invent a shape, let ADLX
+// judge it, then read the curve back like every other setting. Note that
+// IsValidFanTuningStates returns ADLX_OK even for an invalid curve - the verdict
+// is in errorIndex (-1 = valid).
+void ApplyFanCurve(ApplyResult& r, IADLXManualFanTuningPtr fan, const FanCaps& fc, const FanCurve& want) {
+    if (!fc.curve) {
+        ReportRejected(r, "Fan curve control is not supported on this GPU.");
+        return;
+    }
+    if (want.size() != fc.curvePoints) {
+        ReportRejected(r, "This GPU's fan curve has " + std::to_string(fc.curvePoints) +
+                          " points, but " + std::to_string(want.size()) + " were given.");
+        return;
+    }
+    for (size_t i = 0; i < want.size(); ++i) {
+        const bool tOk = want[i].first  >= fc.curveTemp.minValue  && want[i].first  <= fc.curveTemp.maxValue;
+        const bool sOk = want[i].second >= fc.curveSpeed.minValue && want[i].second <= fc.curveSpeed.maxValue;
+        if (!tOk || !sOk) {
+            ReportRejected(r, "Fan curve point " + std::to_string(i + 1) + " (" +
+                              std::to_string(want[i].first) + ":" + std::to_string(want[i].second) +
+                              ") is outside temp " + RangeText(fc.curveTemp) + " C / speed " +
+                              RangeText(fc.curveSpeed) + " %.");
+            return;
+        }
+    }
+    IADLXManualFanTuningStateListPtr states;
+    if (ADLX_FAILED(fan->GetEmptyFanTuningStates(&states)) || !states || states->Size() != want.size()) {
+        ReportRejected(r, "Could not prepare the fan curve for this GPU.");
+        return;
+    }
+    for (adlx_uint i = 0; i < states->Size(); ++i) {
+        IADLXManualFanTuningStatePtr s;
+        if (ADLX_SUCCEEDED(states->At(i, &s)) && s) {
+            s->SetTemperature(want[i].first);
+            s->SetFanSpeed(want[i].second);
+        }
+    }
+    adlx_int bad = -1;
+    if (ADLX_FAILED(fan->IsValidFanTuningStates(states, &bad)) || bad >= 0) {
+        ReportRejected(r, "The driver rejected the fan curve" +
+                          (bad >= 0 ? " at point " + std::to_string(bad + 1) : std::string()) + ".");
+        return;
+    }
+    const ADLX_RESULT res = fan->SetFanTuningStates(states);
+    if (ADLX_FAILED(res)) {
+        std::cerr << " [!] Failed to set Fan curve: " << FanCurveText(want)
+                  << " (Error: " << res << ")" << std::endl;
+        ++r.failed;
+        return;
+    }
+    FanCurve got;
+    if (ReadFanCurve(fan, got) && got != want) {
+        std::cerr << " [!] Fan curve: requested " << FanCurveText(want)
+                  << ", but the driver applied " << FanCurveText(got) << "." << std::endl;
+        ++r.failed;
+        return;
+    }
+    std::cout << " -> Fan curve: " << FanCurveText(want) << std::endl;
+    ++r.applied;
+}
+
 ApplyResult ApplySettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices,
-                          std::optional<int> coreMaxFreq, std::optional<int> coreMinFreq,
-                          std::optional<int> voltage, std::optional<int> vramFreq,
-                          std::optional<int> memTiming, std::optional<int> powerLimit,
-                          std::optional<int> zeroRPM) {
+                          const TuningRequest& q) {
     ApplyResult r;
     IADLXInterfacePtr ifc;
     std::cout << "\n\033[1;33m[*] Applying Settings...\033[0m" << std::endl;
@@ -341,39 +559,53 @@ ApplyResult ApplySettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServi
     IADLXManualGraphicsTuning2Ptr gfx2(ifc);
     if (gfx2) {
         ADLX_IntRange rg{};
-        if (coreMaxFreq && InRange(r, gfx2->GetGPUMaxFrequencyRange(&rg), rg,
-                                   *coreMaxFreq, "Core max offset", " MHz"))
-            Report(r, gfx2->SetGPUMaxFrequency(*coreMaxFreq),
-                   "Core max offset", std::to_string(*coreMaxFreq) + " MHz");
-        if (coreMinFreq && InRange(r, gfx2->GetGPUMinFrequencyRange(&rg), rg,
-                                   *coreMinFreq, "Core min", " MHz"))
-            Report(r, gfx2->SetGPUMinFrequency(*coreMinFreq),
-                   "Core min", std::to_string(*coreMinFreq) + " MHz");
-        if (voltage && InRange(r, gfx2->GetGPUVoltageRange(&rg), rg,
-                               *voltage, "Voltage offset", " mV"))
-            Report(r, gfx2->SetGPUVoltage(*voltage),
-                   "Voltage offset", std::to_string(*voltage) + " mV");
-    } else if (coreMaxFreq || coreMinFreq || voltage) {
+        if (q.coreMax) {
+            const ADLX_RESULT rr = gfx2->GetGPUMaxFrequencyRange(&rg);
+            const std::string what = CoreMaxLabel(ADLX_SUCCEEDED(rr), rg);
+            if (InRange(r, rr, rg, *q.coreMax, what, " MHz"))
+                ReportVerified(r, what, *q.coreMax, WithUnit(" MHz"),
+                               gfx2->SetGPUMaxFrequency(*q.coreMax),
+                               [&](adlx_int* v) { return gfx2->GetGPUMaxFrequency(v); });
+        }
+        if (q.coreMin) {
+            if (!CoreMinSupported(gfx2))
+                ReportRejected(r, "Core min is not supported on this GPU (it exposes no "
+                                  "minimum core clock) - remove coremin= from the command.");
+            else if (InRange(r, gfx2->GetGPUMinFrequencyRange(&rg), rg, *q.coreMin, "Core min", " MHz"))
+                ReportVerified(r, "Core min", *q.coreMin, WithUnit(" MHz"),
+                               gfx2->SetGPUMinFrequency(*q.coreMin),
+                               [&](adlx_int* v) { return gfx2->GetGPUMinFrequency(v); });
+        }
+        if (q.voltage) {
+            const ADLX_RESULT rr = gfx2->GetGPUVoltageRange(&rg);
+            const std::string what = VoltageLabel(ADLX_SUCCEEDED(rr), rg);
+            if (InRange(r, rr, rg, *q.voltage, what, " mV"))
+                ReportVerified(r, what, *q.voltage, WithUnit(" mV"),
+                               gfx2->SetGPUVoltage(*q.voltage),
+                               [&](adlx_int* v) { return gfx2->GetGPUVoltage(v); });
+        }
+    } else if (q.coreMax || q.coreMin || q.voltage) {
         ReportRejected(r, "Manual graphics tuning is not available on this GPU.");
     }
 
-    if (vramFreq || memTiming) {
+    if (q.vramMax || q.memTiming) {
         tuningServices->GetManualVRAMTuning(gpu, &ifc);
         IADLXManualVRAMTuning2Ptr vram2(ifc);
         IADLXManualVRAMTuning1Ptr vram1(ifc);
-        if (vramFreq) {
+        if (q.vramMax) {
             if (!vram2) {
                 ReportRejected(r, "Manual VRAM frequency tuning is not available on this GPU.");
             } else {
                 ADLX_IntRange rv{};
                 if (InRange(r, vram2->GetMaxVRAMFrequencyRange(&rv), rv,
-                            *vramFreq, "VRAM max frequency", " MHz"))
-                    Report(r, vram2->SetMaxVRAMFrequency(*vramFreq),
-                           "VRAM max frequency", std::to_string(*vramFreq) + " MHz");
+                            *q.vramMax, "VRAM max frequency", " MHz"))
+                    ReportVerified(r, "VRAM max frequency", *q.vramMax, WithUnit(" MHz"),
+                                   vram2->SetMaxVRAMFrequency(*q.vramMax),
+                                   [&](adlx_int* v) { return vram2->GetMaxVRAMFrequency(v); });
             }
         }
-        if (memTiming) {
-            const ADLX_MEMORYTIMING_DESCRIPTION mt = (ADLX_MEMORYTIMING_DESCRIPTION)*memTiming;
+        if (q.memTiming) {
+            const ADLX_MEMORYTIMING_DESCRIPTION mt = (ADLX_MEMORYTIMING_DESCRIPTION)*q.memTiming;
             adlx_bool mtSupported = false;
             if (vram2)      vram2->IsSupportedMemoryTiming(&mtSupported);
             else if (vram1) vram1->IsSupportedMemoryTiming(&mtSupported);
@@ -394,34 +626,79 @@ ApplyResult ApplySettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServi
                                       "' not supported on this GPU. Supported: " +
                                       JoinMemTimingNames(presets));
                 else
-                    Report(r, vram2 ? vram2->SetMemoryTimingDescription(mt)
-                                    : vram1->SetMemoryTimingDescription(mt),
-                           "VRAM memory timing", MemTimingName(mt));
+                    ReportVerified(r, "VRAM memory timing", *q.memTiming,
+                                   [](int v) { return std::string(MemTimingName((ADLX_MEMORYTIMING_DESCRIPTION)v)); },
+                                   vram2 ? vram2->SetMemoryTimingDescription(mt)
+                                         : vram1->SetMemoryTimingDescription(mt),
+                                   [&](adlx_int* v) {
+                                       ADLX_MEMORYTIMING_DESCRIPTION d = MEMORYTIMING_DEFAULT;
+                                       const ADLX_RESULT x = vram2 ? vram2->GetMemoryTimingDescription(&d)
+                                                                   : vram1->GetMemoryTimingDescription(&d);
+                                       *v = (adlx_int)d;
+                                       return x;
+                                   });
             }
         }
     }
 
-    if (powerLimit) {
+    if (q.powerLimit) {
         tuningServices->GetManualPowerTuning(gpu, &ifc);
         IADLXManualPowerTuningPtr power(ifc);
         if (!power) {
             ReportRejected(r, "Manual power tuning is not available on this GPU.");
         } else {
             ADLX_IntRange rp{};
-            if (InRange(r, power->GetPowerLimitRange(&rp), rp, *powerLimit, "Power limit", "%"))
-                Report(r, power->SetPowerLimit(*powerLimit), "Power limit",
-                       (*powerLimit >= 0 ? "+" : "") + std::to_string(*powerLimit) + "%");
+            if (InRange(r, power->GetPowerLimitRange(&rp), rp, *q.powerLimit, "Power limit", "%"))
+                ReportVerified(r, "Power limit", *q.powerLimit, WithUnit("%", true),
+                               power->SetPowerLimit(*q.powerLimit),
+                               [&](adlx_int* v) { return power->GetPowerLimit(v); });
         }
     }
 
-    if (zeroRPM) {
+    if (q.zeroRPM || q.fanMin || q.fanTarget || q.acoustic || q.fanCurve) {
         tuningServices->GetManualFanTuning(gpu, &ifc);
         IADLXManualFanTuningPtr fan(ifc);
-        if (fan)
-            Report(r, fan->SetZeroRPMState(*zeroRPM == 1), "Zero RPM",
-                   *zeroRPM == 1 ? "ON" : "OFF");
-        else
+        if (!fan) {
             ReportRejected(r, "Manual fan tuning is not available on this GPU.");
+        } else {
+            const FanCaps fc = ProbeFan(fan);
+            if (q.zeroRPM) {
+                const int want = (*q.zeroRPM == 1) ? 1 : 0;
+                ReportVerified(r, "Zero RPM", want, [](int v) { return std::string(v ? "ON" : "OFF"); },
+                               fan->SetZeroRPMState(want == 1),
+                               [&](adlx_int* v) {
+                                   adlx_bool b = false;
+                                   const ADLX_RESULT x = fan->GetZeroRPMState(&b);
+                                   *v = b ? 1 : 0;
+                                   return x;
+                               });
+            }
+            if (q.fanMin) {
+                if (!fc.minSpeed)
+                    ReportRejected(r, "Minimum fan speed is not supported on this GPU.");
+                else if (InRange(r, ADLX_OK, fc.minSpeedRange, *q.fanMin, "Min fan speed", " RPM"))
+                    ReportVerified(r, "Min fan speed", *q.fanMin, WithUnit(" RPM"),
+                                   fan->SetMinFanSpeed(*q.fanMin),
+                                   [&](adlx_int* v) { return fan->GetMinFanSpeed(v); });
+            }
+            if (q.fanTarget) {
+                if (!fc.target)
+                    ReportRejected(r, "Target fan speed is not supported on this GPU.");
+                else if (InRange(r, ADLX_OK, fc.targetRange, *q.fanTarget, "Target fan speed", " RPM"))
+                    ReportVerified(r, "Target fan speed", *q.fanTarget, WithUnit(" RPM"),
+                                   fan->SetTargetFanSpeed(*q.fanTarget),
+                                   [&](adlx_int* v) { return fan->GetTargetFanSpeed(v); });
+            }
+            if (q.acoustic) {
+                if (!fc.acoustic)
+                    ReportRejected(r, "Acoustic limit is not supported on this GPU.");
+                else if (InRange(r, ADLX_OK, fc.acousticRange, *q.acoustic, "Acoustic limit", " MHz"))
+                    ReportVerified(r, "Acoustic limit", *q.acoustic, WithUnit(" MHz"),
+                                   fan->SetMinAcousticLimit(*q.acoustic),
+                                   [&](adlx_int* v) { return fan->GetMinAcousticLimit(v); });
+            }
+            if (q.fanCurve) ApplyFanCurve(r, fan, fc, *q.fanCurve);
+        }
     }
 
     // Say what actually happened. The old code printed "Successfully applied!"
@@ -448,20 +725,19 @@ ApplyResult LoadProfileOnGpu(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningSe
 
     std::cout << "\033[1;33m[*] Loading Clean Profile (Custom Mapping): \033[0m" << path << std::endl;
 
-    std::optional<int> voltage, power;
+    TuningRequest q;
 
     if (profile.features.count(12)) {
-        voltage = profile.features[12].states[0].value;
-        std::cout << " -> Found ID 12 (Undervolt): " << *voltage << std::endl;
+        q.voltage = profile.features[12].states[0].value;
+        std::cout << " -> Found ID 12 (Undervolt): " << *q.voltage << std::endl;
     }
 
     if (profile.features.count(3)) {
-        power = profile.features[3].states[0].value;
-        std::cout << " -> Found ID 3 (Power Limit): " << *power << std::endl;
+        q.powerLimit = profile.features[3].states[0].value;
+        std::cout << " -> Found ID 3 (Power Limit): " << *q.powerLimit << std::endl;
     }
 
-    return ApplySettings(gpu, tuningServices, std::nullopt, std::nullopt, voltage,
-                         std::nullopt, std::nullopt, power, std::nullopt);
+    return ApplySettings(gpu, tuningServices, q);
 }
 
 
@@ -478,11 +754,21 @@ void PrintGpuValues(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices) {
     tuningServices->GetManualGFXTuning(gpu, &ifc);
     IADLXManualGraphicsTuning2Ptr gfx2(ifc);
     if (gfx2) {
-        adlx_int minFreq, maxFreq, voltage;
-        gfx2->GetGPUMinFrequency(&minFreq);
+        adlx_int minFreq = 0, maxFreq = 0, voltage = 0;
         gfx2->GetGPUMaxFrequency(&maxFreq);
         gfx2->GetGPUVoltage(&voltage);
-        std::cout << "core=" << maxFreq << "\ncoremin=" << minFreq << "\nvolt=" << voltage << "\n";
+        std::cout << "core=" << maxFreq << "\nvolt=" << voltage << "\n";
+        // Whether those two are offsets (RDNA4) or absolute values (RDNA2/3), so
+        // the GUI can label its fields truthfully. Omitted if the range is unknown.
+        ADLX_IntRange rg{};
+        if (ADLX_SUCCEEDED(gfx2->GetGPUMaxFrequencyRange(&rg)))
+            std::cout << "coremode=" << (IsOffsetRange(rg) ? "offset" : "absolute") << "\n";
+        if (ADLX_SUCCEEDED(gfx2->GetGPUVoltageRange(&rg)))
+            std::cout << "voltmode=" << (IsOffsetRange(rg) ? "offset" : "absolute") << "\n";
+        // Only when the card has a minimum clock: a missing key tells the GUI to
+        // disable the field, instead of offering one whose every write fails.
+        if (CoreMinSupported(gfx2) && ADLX_SUCCEEDED(gfx2->GetGPUMinFrequency(&minFreq)))
+            std::cout << "coremin=" << minFreq << "\n";
     }
 
     tuningServices->GetManualVRAMTuning(gpu, &ifc);
@@ -527,9 +813,17 @@ void PrintGpuValues(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices) {
     tuningServices->GetManualFanTuning(gpu, &ifc);
     IADLXManualFanTuningPtr fan(ifc);
     if (fan) {
-        adlx_bool zeroRPM;
-        fan->GetZeroRPMState(&zeroRPM);
-        std::cout << "zerorpm=" << (zeroRPM ? 1 : 0) << "\n";
+        adlx_bool zeroRPM = false;
+        if (ADLX_SUCCEEDED(fan->GetZeroRPMState(&zeroRPM)))
+            std::cout << "zerorpm=" << (zeroRPM ? 1 : 0) << "\n";
+        // Like coremin: each fan key appears only if this card supports it.
+        const FanCaps fc = ProbeFan(fan);
+        adlx_int v = 0;
+        if (fc.minSpeed && ADLX_SUCCEEDED(fan->GetMinFanSpeed(&v)))      std::cout << "fanmin=" << v << "\n";
+        if (fc.target   && ADLX_SUCCEEDED(fan->GetTargetFanSpeed(&v)))   std::cout << "fantarget=" << v << "\n";
+        if (fc.acoustic && ADLX_SUCCEEDED(fan->GetMinAcousticLimit(&v))) std::cout << "acoustic=" << v << "\n";
+        FanCurve cur;
+        if (fc.curve && ReadFanCurve(fan, cur)) std::cout << "fancurve=" << FanCurveText(cur) << "\n";
     }
 
     // Flush now. When stdout is a pipe (launched by the GUI) it is block-
@@ -689,39 +983,75 @@ int main(int argc, char* argv[]) {
                 exitCode = 1;
             }
         } else if (cmd == "-set" && argc > 2) {
-            int targetGpu = 0;
-            std::optional<int> coreMaxFreq, coreMinFreq, voltage, vramFreq,
-                               memTiming, powerLimit, zeroRPM;
+            std::optional<int> targetGpu;
+            TuningRequest q;
+            bool argsOk = true;
+
+            // Every numeric key goes through here: a value that isn't a whole
+            // number is a bad argument (std::stoi on "abc" used to throw and kill
+            // the run with no message).
+            auto parseInt = [&](const std::string& arg, size_t keyLen, std::optional<int>& dst) {
+                const std::string v = arg.substr(keyLen);
+                try {
+                    size_t used = 0;
+                    const int n = std::stoi(v, &used);
+                    if (used == v.size()) { dst = n; return; }
+                } catch (...) {}
+                std::cerr << " [!] Invalid value in '" << arg << "' (expected a whole number)." << std::endl;
+                argsOk = false;
+            };
 
             for (int i = 2; i < argc; ++i) {
-                std::string arg = argv[i];
-                if (arg.find("gpu=") == 0) targetGpu = std::stoi(arg.substr(4));
-                else if (arg.find("core=") == 0) coreMaxFreq = std::stoi(arg.substr(5));
-                else if (arg.find("coremin=") == 0) coreMinFreq = std::stoi(arg.substr(8));
-                else if (arg.find("volt=") == 0) voltage = std::stoi(arg.substr(5));
-                else if (arg.find("vram=") == 0) vramFreq = std::stoi(arg.substr(5));
+                const std::string arg = argv[i];
+                if      (arg.find("gpu=") == 0)       parseInt(arg, 4, targetGpu);
+                else if (arg.find("core=") == 0)      parseInt(arg, 5, q.coreMax);
+                else if (arg.find("coremin=") == 0)   parseInt(arg, 8, q.coreMin);
+                else if (arg.find("volt=") == 0)      parseInt(arg, 5, q.voltage);
+                else if (arg.find("vram=") == 0)      parseInt(arg, 5, q.vramMax);
+                else if (arg.find("power=") == 0)     parseInt(arg, 6, q.powerLimit);
+                else if (arg.find("zerorpm=") == 0)   parseInt(arg, 8, q.zeroRPM);
+                else if (arg.find("fanmin=") == 0)    parseInt(arg, 7, q.fanMin);
+                else if (arg.find("fantarget=") == 0) parseInt(arg, 10, q.fanTarget);
+                else if (arg.find("acoustic=") == 0)  parseInt(arg, 9, q.acoustic);
                 else if (arg.find("memtiming=") == 0) {
                     const int mt = ParseMemTiming(arg.substr(10));
                     if (mt >= 0) {
-                        memTiming = mt;
+                        q.memTiming = mt;
                     } else {
                         std::cerr << " [!] Unknown memtiming value: " << arg.substr(10)
                                   << " (use default|fast|fast2|auto|level1|level2)" << std::endl;
-                        exitCode = 1;   // a bad argument is a failed run
+                        argsOk = false;
                     }
+                } else if (arg.find("fancurve=") == 0) {
+                    FanCurve c;
+                    if (ParseFanCurve(arg.substr(9), c)) {
+                        q.fanCurve = c;
+                    } else {
+                        std::cerr << " [!] Invalid fancurve '" << arg.substr(9) << "' (expected "
+                                  << "temp:speed pairs, e.g. 40:20,55:35,70:55,85:80,95:100)." << std::endl;
+                        argsOk = false;
+                    }
+                } else {
+                    // Used to be ignored silently, so a typo like "fanmn=" looked
+                    // like it had been applied.
+                    std::cerr << " [!] Unknown argument '" << arg << "'." << std::endl;
+                    argsOk = false;
                 }
-                else if (arg.find("power=") == 0) powerLimit = std::stoi(arg.substr(6));
-                else if (arg.find("zerorpm=") == 0) zeroRPM = std::stoi(arg.substr(8));
             }
 
-            if (targetGpu < (int)gpus->Size()) {
+            const int gpuIdx = targetGpu.value_or(0);
+            if (!argsOk) {
+                // Validate first, apply second: with a malformed command line the
+                // user's intent is unclear, so nothing is touched.
+                std::cerr << "[!] Nothing applied - fix the arguments above." << std::endl;
+                exitCode = 1;
+            } else if (gpuIdx >= 0 && gpuIdx < (int)gpus->Size()) {
                 IADLXGPUPtr gpu;
-                gpus->At(targetGpu, &gpu);
-                if (ApplySettings(gpu, tuningServices, coreMaxFreq, coreMinFreq, voltage,
-                                  vramFreq, memTiming, powerLimit, zeroRPM).failed > 0)
+                gpus->At(gpuIdx, &gpu);
+                if (ApplySettings(gpu, tuningServices, q).failed > 0)
                     exitCode = 1;
             } else {
-                std::cerr << "[!] GPU index " << targetGpu << " out of range." << std::endl;
+                std::cerr << "[!] GPU index " << gpuIdx << " out of range." << std::endl;
                 exitCode = 1;
             }
 
@@ -731,7 +1061,9 @@ int main(int argc, char* argv[]) {
             std::cout << "  RadTune -get [gpu=N]" << std::endl;
             std::cout << "  RadTune -gpus                 (machine-readable GPU list)" << std::endl;
             std::cout << "  RadTune -monitor [gpu=N] [watch=ms]   (live telemetry; watch= streams samples)" << std::endl;
-            std::cout << "  RadTune -set [gpu=N] [core=MHz] [coremin=MHz] [volt=mV] [vram=MHz] [memtiming=default|fast|fast2|auto|level1|level2] [power=%] [zerorpm=0|1]" << std::endl;
+            std::cout << "  RadTune -set [gpu=N] [core=MHz] [coremin=MHz] [volt=mV] [vram=MHz] [memtiming=default|fast|fast2|auto|level1|level2] [power=%]" << std::endl;
+            std::cout << "               [zerorpm=0|1] [fanmin=RPM] [fantarget=RPM] [acoustic=MHz] [fancurve=T:S,T:S,...]" << std::endl;
+            std::cout << "               (run -list to see which of these your GPU supports, and their ranges)" << std::endl;
             std::cout << "  RadTune -load profile.xml [gpu=N]" << std::endl;
             std::cout << "  RadTune -schedule <logon|startup|daily=HH:MM> <-set ...|-load ...>" << std::endl;
             std::cout << "  RadTune -schedule status | remove" << std::endl;
