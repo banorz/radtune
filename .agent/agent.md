@@ -26,7 +26,7 @@ RadTune -list                                        # GPUs, current tuning, val
 RadTune -set gpu=0 core=-100 volt=-50 vram=2600 memtiming=fast power=10 zerorpm=1
 RadTune -set fancurve=30:15,50:32,62:49,74:66,83:100 # fan curve, temp C : speed % (RDNA4: 5 points)
 RadTune -monitor gpu=0 [watch=1000]                  # live telemetry (real clocks/temps/fan/power)
-RadTune -load "C:\profile.xml" [gpu=N]               # apply an Adrenalin-exported XML profile
+RadTune -load "C:\profile.xml" [gpu=N] [fancurve=skip]  # apply an Adrenalin XML profile (volt, power, fan curve)
 RadTune -schedule logon -set core=-100 volt=-50      # auto-apply via Task Scheduler (run elevated once)
 RadTune -schedule status | remove
 ```

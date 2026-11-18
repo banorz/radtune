@@ -10,7 +10,7 @@ A lightweight command-line tool to tune AMD GPU parameters using the AMD ADLX SD
   - **VRAM**: Set Max Memory Frequency (MHz).
   - **Power**: Adjust Power Limit percentage.
   - **Fan**: Toggle Zero RPM mode.
-- **XML Profile Support**: Load and apply custom tuning profiles (`.xml`) exported from AMD Software: Adrenalin Edition, with specialized mapping for undervolting and power limits.
+- **XML Profile Support**: Load and apply custom tuning profiles (`.xml`) exported from AMD Software: Adrenalin Edition, with mapping for undervolting, power limit and fan curve.
 - **Modern ADLX Integration**: Uses the latest ADLX SDK for compatibility with RDNA 2 (Navi 2x) and RDNA 3 (Navi 3x) architectures.
 
 ## Prerequisites
@@ -120,9 +120,13 @@ RadTune.exe -monitor gpu=0
 
 ### 3. Load Tuning Profile from XML
 ```bash
-# Loads undervolt (ID 12) and power limit (ID 3) from an exported AMD profile
+# Loads undervolt (ID 12), power limit (ID 3) and fan curve (ID 22) from an exported AMD profile
 RadTune.exe -load "C:\path\to\performance_profile.xml" [gpu=N]
+
+# Same, but leave the fan curve alone (e.g. another program manages your fans)
+RadTune.exe -load "C:\path\to\performance_profile.xml" fancurve=skip
 ```
+Adrenalin writes a fan curve into **every** export, even when you never enabled manual fan control, so `-load` applies it unless you pass `fancurve=skip`. Any other setting in the profile (core clocks, VRAM, …) is not applied yet; RadTune lists those feature IDs on an `[i] Not applied by -load` line.
 
 ### 4. Automatic Scheduling (Task Scheduler)
 Register RadTune to re-apply your tuning automatically — no manual Task Scheduler clicking. The task is created with **highest privileges** (required by ADLX) for you.
