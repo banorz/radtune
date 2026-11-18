@@ -3,6 +3,22 @@
 All notable changes to RadTune are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **`-load` now applies the profile's fan curve** (#13). Adrenalin stores it as
+  FEATURE 22 (temperature/speed pairs); it used to be dropped silently. It goes
+  through the same checks and read-back as `-set fancurve=`. Adrenalin writes a
+  curve into every export, so **an existing `-load` schedule will now set the fan
+  curve too** — add `fancurve=skip` to keep the old behaviour.
+- `-load` with a malformed profile (non-numeric `ID`/`Value`) reports a parse
+  error instead of crashing; an invalid `gpu=` or unknown option is rejected
+  before anything is applied.
+
+### Added
+- `-load` prints the profile feature IDs it does **not** apply, so a profile is
+  never assumed to have taken effect in full.
+
 ## [1.4.0] - 2026-10-07
 
 Fan control, a scheduled task that no longer flashes a console window, and

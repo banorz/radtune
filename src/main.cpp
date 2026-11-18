@@ -714,7 +714,8 @@ ApplyResult ApplySettings(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServi
     return r;
 }
 
-ApplyResult LoadProfileOnGpu(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices, const std::string& path) {
+ApplyResult LoadProfileOnGpu(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningServices,
+                             const std::string& path, bool loadFan) {
     GPUProfile profile;
     if (!ProfileParser::Parse(path, profile)) {
         std::cerr << "[!] Error parsing XML profile: " << path << std::endl;
@@ -727,15 +728,35 @@ ApplyResult LoadProfileOnGpu(IADLXGPUPtr gpu, IADLXGPUTuningServicesPtr tuningSe
 
     TuningRequest q;
 
-    if (profile.features.count(12)) {
-        q.voltage = profile.features[12].states[0].value;
+    if ((q.voltage = profile.StateValue(ProfileFeature::Voltage, 0)))
         std::cout << " -> Found ID 12 (Undervolt): " << *q.voltage << std::endl;
+
+    if ((q.powerLimit = profile.StateValue(ProfileFeature::PowerLimit, 0)))
+        std::cout << " -> Found ID 3 (Power Limit): " << *q.powerLimit << std::endl;
+
+    // Issue #13: the curve used to be silently dropped. Every export seen carries
+    // FEATURE 22 - even a stock one, and no flag tells whether manual fan control
+    // was on - so the curve is applied unless the user opts out with
+    // fancurve=skip (e.g. another program manages the fans). Verified by
+    // ApplyFanCurve exactly like -set fancurve=.
+    const FanCurve curve = profile.FanCurvePoints();
+    if (!curve.empty()) {
+        std::cout << " -> Found ID 22 (Fan curve): " << FanCurveText(curve)
+                  << (loadFan ? "" : "   (skipped: fancurve=skip)") << std::endl;
+        if (loadFan) q.fanCurve = curve;
     }
 
-    if (profile.features.count(3)) {
-        q.powerLimit = profile.features[3].states[0].value;
-        std::cout << " -> Found ID 3 (Power Limit): " << *q.powerLimit << std::endl;
+    // Say what the profile holds that -load does not apply, instead of letting
+    // the user assume the whole file took effect.
+    std::string ignored;
+    for (const auto& [id, feat] : profile.features) {
+        if (id == ProfileFeature::Voltage || id == ProfileFeature::PowerLimit ||
+            (id == ProfileFeature::FanCurve && !curve.empty()))
+            continue;
+        ignored += (ignored.empty() ? "" : ", ") + std::to_string(id);
     }
+    if (!ignored.empty())
+        std::cout << " [i] Not applied by -load (unmapped profile feature IDs): " << ignored << std::endl;
 
     return ApplySettings(gpu, tuningServices, q);
 }
@@ -969,15 +990,28 @@ int main(int argc, char* argv[]) {
         } else if (cmd == "-load" && argc > 2) {
             std::string path = argv[2];
             int targetGpu = 0;
-            if (argc > 3) {
-                 std::string gpuArg = argv[3];
-                 if (gpuArg.find("gpu=") == 0) targetGpu = std::stoi(gpuArg.substr(4));
+            bool loadFan = true, argsOk = true;
+            for (int i = 3; i < argc; ++i) {
+                const std::string a = argv[i];
+                if (a.rfind("gpu=", 0) == 0) {
+                    try { targetGpu = std::stoi(a.substr(4)); }
+                    catch (...) { std::cerr << "[!] Invalid " << a << std::endl; argsOk = false; }
+                } else if (a == "fancurve=skip") {
+                    loadFan = false;
+                } else {
+                    std::cerr << "[!] Unknown -load option: " << a
+                              << " (expected gpu=N or fancurve=skip)" << std::endl;
+                    argsOk = false;
+                }
             }
 
-            if (targetGpu < (int)gpus->Size()) {
+            if (!argsOk) {
+                std::cerr << "[!] Nothing applied - fix the arguments above." << std::endl;
+                exitCode = 1;
+            } else if (targetGpu >= 0 && targetGpu < (int)gpus->Size()) {
                 IADLXGPUPtr gpu;
                 gpus->At(targetGpu, &gpu);
-                if (LoadProfileOnGpu(gpu, tuningServices, path).failed > 0) exitCode = 1;
+                if (LoadProfileOnGpu(gpu, tuningServices, path, loadFan).failed > 0) exitCode = 1;
             } else {
                 std::cerr << "[!] GPU index " << targetGpu << " out of range." << std::endl;
                 exitCode = 1;
@@ -1064,7 +1098,7 @@ int main(int argc, char* argv[]) {
             std::cout << "  RadTune -set [gpu=N] [core=MHz] [coremin=MHz] [volt=mV] [vram=MHz] [memtiming=default|fast|fast2|auto|level1|level2] [power=%]" << std::endl;
             std::cout << "               [zerorpm=0|1] [fanmin=RPM] [fantarget=RPM] [acoustic=MHz] [fancurve=T:S,T:S,...]" << std::endl;
             std::cout << "               (run -list to see which of these your GPU supports, and their ranges)" << std::endl;
-            std::cout << "  RadTune -load profile.xml [gpu=N]" << std::endl;
+            std::cout << "  RadTune -load profile.xml [gpu=N] [fancurve=skip]" << std::endl;
             std::cout << "  RadTune -schedule <logon|startup|daily=HH:MM> <-set ...|-load ...>" << std::endl;
             std::cout << "  RadTune -schedule status | remove" << std::endl;
             exitCode = 1;   // unknown verb

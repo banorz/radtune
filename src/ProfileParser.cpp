@@ -2,6 +2,7 @@
 #include <fstream>
 #include <sstream>
 #include <iostream>
+#include <stdexcept>
 
 bool ProfileParser::Parse(const std::string& filePath, GPUProfile& profile) {
     std::ifstream file(filePath);
@@ -11,6 +12,9 @@ bool ProfileParser::Parse(const std::string& filePath, GPUProfile& profile) {
     buffer << file.rdbuf();
     std::string xml = buffer.str();
 
+    // A missing/non-numeric ID or Value makes std::stoi throw: that is a
+    // malformed profile, reported as a parse failure rather than a crash.
+    try {
     size_t pos = 0;
     size_t gpuStart = xml.find("<GPU", pos);
     if (gpuStart == std::string::npos) return false;
@@ -59,8 +63,30 @@ bool ProfileParser::Parse(const std::string& filePath, GPUProfile& profile) {
         profile.features[feat.id] = feat;
         pos = featEndTag + 1;
     }
+    } catch (const std::exception&) {
+        return false;
+    }
 
     return true;
+}
+
+std::optional<int> GPUProfile::StateValue(int featureId, int stateId) const {
+    const auto f = features.find(featureId);
+    if (f == features.end()) return std::nullopt;
+    for (const FeatureState& s : f->second.states)
+        if (s.id == stateId) return s.value;
+    return std::nullopt;
+}
+
+std::vector<std::pair<int, int>> GPUProfile::FanCurvePoints() const {
+    std::vector<std::pair<int, int>> curve;
+    for (int i = 0;; i += 2) {
+        const auto temp = StateValue(ProfileFeature::FanCurve, i);
+        const auto speed = StateValue(ProfileFeature::FanCurve, i + 1);
+        if (!temp || !speed) break;
+        curve.emplace_back(*temp, *speed);
+    }
+    return curve;
 }
 
 std::string ProfileParser::GetAttribute(const std::string& tagBody, const std::string& attrName) {
